@@ -2,7 +2,6 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
 from core.test_helpers import LogInHelper
-from location.models import Hotspot
 from location.test_helpers import create_test_village
 from social_protection.models import Project, ProjectPhase, ProjectSector, ProjectStatus
 from social_protection.services import ProjectService
@@ -20,14 +19,6 @@ class ProjectServiceTest(TestCase):
         self.village = create_test_village({"code": "SPPROJ"})
         self.micro_catchment = self.village.parent
         self.district = self.micro_catchment.parent
-        self.hotspot = Hotspot.objects.create(
-            code="HSPPROJ",
-            name="Hotspot A",
-            village=self.village,
-            micro_catchment=self.micro_catchment,
-            audit_user_id=-1,
-        )
-        self.hotspot.villages.add(self.village)
         self.sector = ProjectSector.objects.create(name="Roads")
         self.phase = ProjectPhase.objects.create(name="Phase One", phase_number=1)
 
@@ -35,7 +26,6 @@ class ProjectServiceTest(TestCase):
         payload = {
             "district": self.district,
             "micro_catchment": self.micro_catchment,
-            "hotspot": self.hotspot,
             "sector": self.sector,
             "phase": self.phase,
             "known_place": "Bridge",
@@ -51,7 +41,7 @@ class ProjectServiceTest(TestCase):
         self.assertTrue(result["success"], result.get("detail"))
         project = Project.objects.get(uuid=result["data"]["uuid"])
         self.assertEqual(project.status, ProjectStatus.PREPARATION)
-        self.assertEqual(project.name, "Hotspot A-Roads-Phase 1 - Bridge")
+        self.assertEqual(project.name, f"{self.micro_catchment.name}-Roads-Phase 1 - Bridge")
 
     def test_create_rejects_target_households_below_one(self):
         with self.assertRaises(ValidationError):

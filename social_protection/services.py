@@ -936,7 +936,6 @@ class ProjectService(BaseService):
         required_fields = [
             "district",
             "micro_catchment",
-            "hotspot",
             "sector",
             "phase",
             "known_place",
@@ -967,7 +966,6 @@ class ProjectService(BaseService):
         self._validate_project_locations(
             obj_data["district"],
             obj_data["micro_catchment"],
-            obj_data["hotspot"],
         )
 
     def _validate_project_update_payload(self, obj_data):
@@ -983,17 +981,16 @@ class ProjectService(BaseService):
         if sector and hasattr(sector, "is_active") and not sector.is_active:
             raise ValidationError(_("Project sector must be active."))
 
-        if any(field in obj_data for field in ("district", "micro_catchment", "hotspot")):
+        if any(field in obj_data for field in ("district", "micro_catchment")):
             project = Project.objects.filter(id=obj_data["id"]).first()
             if not project:
                 return
             district = obj_data.get("district", project.district)
             micro_catchment = obj_data.get("micro_catchment", project.micro_catchment)
-            hotspot = obj_data.get("hotspot", project.hotspot)
-            if district and micro_catchment and hotspot:
-                self._validate_project_locations(district, micro_catchment, hotspot)
+            if district and micro_catchment:
+                self._validate_project_locations(district, micro_catchment)
 
-    def _validate_project_locations(self, district, micro_catchment, hotspot):
+    def _validate_project_locations(self, district, micro_catchment):
         user = getattr(self.user, "_u", self.user)
         if user and not LocationManager().is_allowed(user, [district.id]):
             raise ValidationError(_("Selected district is not allowed for this user."))
@@ -1003,24 +1000,18 @@ class ProjectService(BaseService):
             raise ValidationError(_("Selected micro-catchment must be a micro-catchment."))
         if micro_catchment.parent_id != district.id:
             raise ValidationError(_("Micro-catchment must belong to the selected district."))
-        if hotspot.micro_catchment_id and hotspot.micro_catchment_id != micro_catchment.id:
-            raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
-        if not hotspot.micro_catchment_id:
-            village_ids = hotspot.villages.values_list("id", flat=True)
-            if not Location.objects.filter(id__in=village_ids, parent=micro_catchment).exists():
-                raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
 
     def _set_generated_project_name(self, obj_data):
-        if all(obj_data.get(field) for field in ("hotspot", "sector", "phase", "known_place")):
+        if all(obj_data.get(field) for field in ("micro_catchment", "sector", "phase", "known_place")):
             obj_data["name"] = Project.generate_name(
-                obj_data["hotspot"],
+                obj_data["micro_catchment"],
                 obj_data["sector"],
                 obj_data["phase"],
                 obj_data["known_place"],
             )
 
     def _set_generated_project_name_for_update(self, obj_data):
-        name_fields = {"hotspot", "sector", "phase", "known_place"}
+        name_fields = {"micro_catchment", "sector", "phase", "known_place"}
         if not name_fields.intersection(obj_data):
             return
 
@@ -1029,7 +1020,7 @@ class ProjectService(BaseService):
             return
 
         generated_name_data = {
-            "hotspot": obj_data.get("hotspot", project.hotspot),
+            "micro_catchment": obj_data.get("micro_catchment", project.micro_catchment),
             "sector": obj_data.get("sector", project.sector),
             "phase": obj_data.get("phase", project.phase),
             "known_place": obj_data.get("known_place", project.known_place),

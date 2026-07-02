@@ -11,7 +11,7 @@ from core import prefix_filterset, ExtendedConnection
 from individual.models import GroupIndividual
 from individual.gql_queries import IndividualGQLType, GroupGQLType, \
     IndividualDataSourceUploadGQLType
-from location.models import Hotspot, Location
+from location.models import Location
 from location.gql_queries import LocationGQLType
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
@@ -537,35 +537,7 @@ class ProjectPhaseGQLType(DjangoObjectType):
         connection_class = ExtendedConnection
 
 
-class ProjectHotspotGQLType(DjangoObjectType):
-    district = graphene.Field(LocationGQLType)
-    micro_catchment = graphene.Field(LocationGQLType)
-
-    class Meta:
-        model = Hotspot
-        interfaces = (graphene.relay.Node,)
-        filter_fields = {
-            "id": ["exact"],
-            "uuid": ["exact"],
-            "code": ["exact", "istartswith", "icontains", "iexact"],
-            "name": ["exact", "istartswith", "icontains", "iexact"],
-        }
-        connection_class = ExtendedConnection
-
-    def resolve_district(self, info):
-        if self.micro_catchment_id:
-            return self.micro_catchment.parent
-        village = self.villages.filter(*Location.filter_validity()).first() or self.village
-        return village.parent.parent if village and village.parent else None
-
-    def resolve_micro_catchment(self, info):
-        if self.micro_catchment_id:
-            return self.micro_catchment
-        village = self.villages.filter(*Location.filter_validity()).first() or self.village
-        return village.parent if village else None
-
-
-class MicroCatchmentGQLType(DjangoObjectType):
+class ProjectMicroCatchmentGQLType(DjangoObjectType):
     district = graphene.Field(LocationGQLType)
 
     class Meta:
@@ -601,8 +573,6 @@ class ProjectFilter(django_filters.FilterSet):
             'district__uuid': ['exact'],
             'micro_catchment__id': ['exact'],
             'micro_catchment__uuid': ['exact'],
-            'hotspot__id': ['exact'],
-            'hotspot__uuid': ['exact'],
             'known_place': ["exact", "iexact", "icontains"],
             'target_beneficiaries': ['exact', 'gte', 'lte'],
             'target_households': ['exact', 'gte', 'lte'],
@@ -645,7 +615,6 @@ class ProjectHistoryGQLType(DjangoObjectType):
             'location__id': ['exact'],
             'district__id': ['exact'],
             'micro_catchment__id': ['exact'],
-            'hotspot__id': ['exact'],
             'known_place': ["exact", "iexact", "icontains"],
             'target_beneficiaries': ['exact', 'gte', 'lte'],
             'target_households': ['exact', 'gte', 'lte'],

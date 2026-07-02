@@ -42,7 +42,7 @@ from social_protection.gql_queries import (
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
     BenefitPlanHistoryGQLType,
     ActivityGQLType, ProjectGQLType, ProjectSectorGQLType, ProjectPhaseGQLType,
-    ProjectHotspotGQLType, MicroCatchmentGQLType, ProjectHistoryGQLType,
+    ProjectMicroCatchmentGQLType, ProjectHistoryGQLType,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -62,7 +62,7 @@ from social_protection.validation import (
 )
 import graphene_django_optimizer as gql_optimizer
 from location.apps import LocationConfig
-from location.models import extend_allowed_locations, Hotspot, Location
+from location.models import extend_allowed_locations, Location
 
 
 def patch_details(beneficiary_df: pd.DataFrame):
@@ -189,16 +189,8 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         ProjectPhaseGQLType,
         orderBy=graphene.List(of_type=graphene.String),
     )
-    project_hotspot = OrderedDjangoFilterConnectionField(
-        ProjectHotspotGQLType,
-        orderBy=graphene.List(of_type=graphene.String),
-        district_id=graphene.String(),
-        micro_catchment_id=graphene.String(),
-        district_uuid=graphene.Argument(graphene.String, name="district_Uuid"),
-        micro_catchment_uuid=graphene.Argument(graphene.String, name="microCatchment_Uuid"),
-    )
-    micro_catchments = OrderedDjangoFilterConnectionField(
-        MicroCatchmentGQLType,
+    project_micro_catchments = OrderedDjangoFilterConnectionField(
+        ProjectMicroCatchmentGQLType,
         orderBy=graphene.List(of_type=graphene.String),
         district_uuid=graphene.Argument(graphene.String, name="district_Uuid"),
     )
@@ -684,33 +676,7 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         query = ProjectPhase.objects.filter(*filters)
         return gql_optimizer.query(query, info)
 
-    def resolve_project_hotspot(self, info, **kwargs):
-        Query._check_permissions(
-            info.context.user,
-            SocialProtectionConfig.gql_project_search_perms
-        )
-        filters = append_validity_filter(**kwargs)
-        district_id = (
-            kwargs.get("district_id")
-            or kwargs.get("district_uuid")
-            or kwargs.get("district_Uuid")
-        )
-        micro_catchment_id = (
-            kwargs.get("micro_catchment_id")
-            or kwargs.get("micro_catchment_uuid")
-            or kwargs.get("micro_catchment_Uuid")
-        )
-        if micro_catchment_id:
-            filters.append(Q(micro_catchment__uuid=micro_catchment_id))
-        elif district_id:
-            filters.append(
-                Q(micro_catchment__parent__uuid=district_id)
-                | Q(villages__parent__parent__uuid=district_id)
-            )
-        query = Hotspot.objects.filter(*filters).distinct()
-        return gql_optimizer.query(query, info)
-
-    def resolve_micro_catchments(self, info, **kwargs):
+    def resolve_project_micro_catchments(self, info, **kwargs):
         Query._check_permissions(
             info.context.user,
             SocialProtectionConfig.gql_project_search_perms

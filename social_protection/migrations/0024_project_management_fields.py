@@ -5,7 +5,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("location", "0023_hotspot_micro_catchment_villages"),
+        ("location", "0021_alter_microcatchment_legacy_id_and_more"),
         ("social_protection", "0023_multi_enrollment_and_time_entry"),
     ]
 
@@ -77,11 +77,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name="project",
-            name="hotspot",
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name="projects", to="location.hotspot"),
-        ),
-        migrations.AddField(
-            model_name="project",
             name="known_place",
             field=models.CharField(blank=True, max_length=255, null=True),
         ),
@@ -143,11 +138,6 @@ class Migration(migrations.Migration):
             model_name="historicalproject",
             name="district",
             field=models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name="+", to="location.location"),
-        ),
-        migrations.AddField(
-            model_name="historicalproject",
-            name="hotspot",
-            field=models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name="+", to="location.hotspot"),
         ),
         migrations.AddField(
             model_name="historicalproject",

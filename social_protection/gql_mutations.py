@@ -21,7 +21,7 @@ from social_protection.services import (
     BeneficiaryService, GroupBeneficiaryService,
     ProjectEnrollmentService
 )
-from location.models import Hotspot, Location
+from location.models import Location
 
 
 def _pop_if_present(data, field_name):
@@ -38,10 +38,6 @@ def _set_project_location_payload(data):
     micro_catchment_id = _pop_if_present(data, "micro_catchment_id")
     if micro_catchment_id:
         data["micro_catchment"] = Location.objects.get(uuid=micro_catchment_id)
-
-    hotspot_id = _pop_if_present(data, "hotspot_id")
-    if hotspot_id:
-        data["hotspot"] = Hotspot.objects.get(uuid=hotspot_id)
 
     sector_id = _pop_if_present(data, "sector_id")
     if sector_id:
@@ -561,7 +557,6 @@ class CreateProjectInputType(OpenIMISMutation.Input):
     name = graphene.String(required=False)
     district_id = graphene.ID(required=True)
     micro_catchment_id = graphene.ID(required=True)
-    hotspot_id = graphene.ID(required=True)
     sector_id = graphene.ID(required=True)
     phase_id = graphene.ID(required=True)
     known_place = graphene.String(required=True)
@@ -629,7 +624,6 @@ class UpdateProjectInputType(OpenIMISMutation.Input):
     location_id = graphene.ID(required=False)
     district_id = graphene.ID(required=False)
     micro_catchment_id = graphene.ID(required=False)
-    hotspot_id = graphene.ID(required=False)
     sector_id = graphene.ID(required=False)
     phase_id = graphene.ID(required=False)
     known_place = graphene.String(required=False)
