@@ -17,6 +17,7 @@ from individual.models import (
     IndividualDataSource,
     Individual,
 )
+from location.models import Location, LocationManager
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlan,
@@ -24,6 +25,7 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     GroupBeneficiary,
     Project,
+    ProjectStatus,
     BeneficiaryProjectTimeEntry,
     GroupBeneficiaryProjectTimeEntry,
     BeneficiaryProjectEnrollment,
@@ -411,6 +413,10 @@ class ProjectEnrollmentService:
             data_list=time_entries_data,
             user=self.user
         )
+        project_service = ProjectService(self.user)
+        for project in {enrollment.project for enrollment in enrollment_map.values()}:
+            if project.status == ProjectStatus.INITIATED:
+                project_service.mark_project_in_progress(project)
 
 
 class BeneficiaryImportService:
@@ -881,17 +887,156 @@ class GroupBeneficiaryImportService(BeneficiaryImportService):
 
 class ProjectService(BaseService):
     OBJECT_TYPE = Project
+    ALLOWED_STATUS_TRANSITIONS = {
+        ProjectStatus.PREPARATION: ProjectStatus.INITIATED,
+        ProjectStatus.INITIATED: ProjectStatus.IN_PROGRESS,
+    }
 
     def __init__(self, user, validation_class=ProjectValidation):
         super().__init__(user, validation_class)
 
     @register_service_signal("project_service.create")
     def create(self, obj_data):
+        obj_data.pop("status", None)
+        obj_data["status"] = ProjectStatus.PREPARATION
+        self._validate_project_creation_payload(obj_data)
+        self._set_generated_project_name(obj_data)
         return super().create(obj_data)
 
     @register_service_signal("project_service.update")
     def update(self, obj_data):
+        if "status" in obj_data:
+            obj_data.pop("status")
+        self._validate_project_update_payload(obj_data)
+        self._set_generated_project_name_for_update(obj_data)
         return super().update(obj_data)
+
+    def mark_project_initiated(self, project):
+        return self._transition_project_status(project, ProjectStatus.INITIATED)
+
+    def mark_project_in_progress(self, project):
+        return self._transition_project_status(project, ProjectStatus.IN_PROGRESS)
+
+    def _transition_project_status(self, project, new_status):
+        expected_status = self.ALLOWED_STATUS_TRANSITIONS.get(project.status)
+        if expected_status != new_status:
+            raise ValidationError(
+                _("Invalid project status transition from %(from_status)s to %(to_status)s.")
+                % {"from_status": project.status, "to_status": new_status}
+            )
+        project.status = new_status
+        project.save(user=self.user)
+        return {
+            "success": True,
+            "message": "Ok",
+            "detail": f"Project moved to {new_status}",
+        }
+
+    def _validate_project_creation_payload(self, obj_data):
+        required_fields = [
+            "district",
+            "micro_catchment",
+            "hotspot",
+            "sector",
+            "phase",
+            "known_place",
+            "target_households",
+        ]
+        missing_fields = [
+            field for field in required_fields
+            if field not in obj_data or obj_data.get(field) in (None, "")
+        ]
+        if missing_fields:
+            raise ValidationError(
+                _("Missing required project fields: %(fields)s.")
+                % {"fields": ", ".join(missing_fields)}
+            )
+
+        target_households = obj_data.get("target_households")
+        if target_households < 1 or target_households > 200:
+            raise ValidationError(_("Target households must be between 1 and 200."))
+
+        phase = obj_data["phase"]
+        if not phase.is_active:
+            raise ValidationError(_("Project phase must be active."))
+
+        sector = obj_data["sector"]
+        if hasattr(sector, "is_active") and not sector.is_active:
+            raise ValidationError(_("Project sector must be active."))
+
+        self._validate_project_locations(
+            obj_data["district"],
+            obj_data["micro_catchment"],
+            obj_data["hotspot"],
+        )
+
+    def _validate_project_update_payload(self, obj_data):
+        if "target_households" in obj_data and obj_data["target_households"] is not None:
+            if obj_data["target_households"] < 1 or obj_data["target_households"] > 200:
+                raise ValidationError(_("Target households must be between 1 and 200."))
+
+        phase = obj_data.get("phase")
+        if phase and not phase.is_active:
+            raise ValidationError(_("Project phase must be active."))
+
+        sector = obj_data.get("sector")
+        if sector and hasattr(sector, "is_active") and not sector.is_active:
+            raise ValidationError(_("Project sector must be active."))
+
+        if any(field in obj_data for field in ("district", "micro_catchment", "hotspot")):
+            project = Project.objects.filter(id=obj_data["id"]).first()
+            if not project:
+                return
+            district = obj_data.get("district", project.district)
+            micro_catchment = obj_data.get("micro_catchment", project.micro_catchment)
+            hotspot = obj_data.get("hotspot", project.hotspot)
+            if district and micro_catchment and hotspot:
+                self._validate_project_locations(district, micro_catchment, hotspot)
+
+    def _validate_project_locations(self, district, micro_catchment, hotspot):
+        user = getattr(self.user, "_u", self.user)
+        if user and not LocationManager().is_allowed(user, [district.id]):
+            raise ValidationError(_("Selected district is not allowed for this user."))
+        if district.type != "D":
+            raise ValidationError(_("Selected district must be a district."))
+        if micro_catchment.type != "W":
+            raise ValidationError(_("Selected micro-catchment must be a micro-catchment."))
+        if micro_catchment.parent_id != district.id:
+            raise ValidationError(_("Micro-catchment must belong to the selected district."))
+        if hotspot.micro_catchment_id and hotspot.micro_catchment_id != micro_catchment.id:
+            raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
+        if not hotspot.micro_catchment_id:
+            village_ids = hotspot.villages.values_list("id", flat=True)
+            if not Location.objects.filter(id__in=village_ids, parent=micro_catchment).exists():
+                raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
+
+    def _set_generated_project_name(self, obj_data):
+        if all(obj_data.get(field) for field in ("hotspot", "sector", "phase", "known_place")):
+            obj_data["name"] = Project.generate_name(
+                obj_data["hotspot"],
+                obj_data["sector"],
+                obj_data["phase"],
+                obj_data["known_place"],
+            )
+
+    def _set_generated_project_name_for_update(self, obj_data):
+        name_fields = {"hotspot", "sector", "phase", "known_place"}
+        if not name_fields.intersection(obj_data):
+            return
+
+        project = Project.objects.filter(id=obj_data["id"]).first()
+        if not project:
+            return
+
+        generated_name_data = {
+            "hotspot": obj_data.get("hotspot", project.hotspot),
+            "sector": obj_data.get("sector", project.sector),
+            "phase": obj_data.get("phase", project.phase),
+            "known_place": obj_data.get("known_place", project.known_place),
+        }
+        self._set_generated_project_name(generated_name_data)
+        if generated_name_data.get("name"):
+            obj_data["name"] = generated_name_data["name"]
 
     @register_service_signal("project_service.delete")
     def delete(self, obj_data):

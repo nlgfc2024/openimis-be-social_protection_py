@@ -41,8 +41,8 @@ from social_protection.gql_queries import (
     BeneficiaryGQLType, GroupBeneficiaryGQLType,
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
     BenefitPlanHistoryGQLType,
-    ActivityGQLType, ProjectGQLType,
-    ProjectHistoryGQLType,
+    ActivityGQLType, ProjectGQLType, ProjectSectorGQLType, ProjectPhaseGQLType,
+    ProjectHotspotGQLType, MicroCatchmentGQLType, ProjectHistoryGQLType,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -52,6 +52,8 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     Activity,
     Project,
+    ProjectSector,
+    ProjectPhase,
 )
 from social_protection.validation import (
     validate_bf_unique_code,
@@ -60,7 +62,7 @@ from social_protection.validation import (
 )
 import graphene_django_optimizer as gql_optimizer
 from location.apps import LocationConfig
-from location.models import extend_allowed_locations, Location
+from location.models import extend_allowed_locations, Hotspot, Location
 
 
 def patch_details(beneficiary_df: pd.DataFrame):
@@ -179,6 +181,27 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         applyDefaultValidityFilter=graphene.Boolean(),
         client_mutation_id=graphene.String(),
     )
+    project_sector = OrderedDjangoFilterConnectionField(
+        ProjectSectorGQLType,
+        orderBy=graphene.List(of_type=graphene.String),
+    )
+    project_phase = OrderedDjangoFilterConnectionField(
+        ProjectPhaseGQLType,
+        orderBy=graphene.List(of_type=graphene.String),
+    )
+    project_hotspot = OrderedDjangoFilterConnectionField(
+        ProjectHotspotGQLType,
+        orderBy=graphene.List(of_type=graphene.String),
+        district_id=graphene.String(),
+        micro_catchment_id=graphene.String(),
+        district_uuid=graphene.Argument(graphene.String, name="district_Uuid"),
+        micro_catchment_uuid=graphene.Argument(graphene.String, name="microCatchment_Uuid"),
+    )
+    micro_catchments = OrderedDjangoFilterConnectionField(
+        MicroCatchmentGQLType,
+        orderBy=graphene.List(of_type=graphene.String),
+        district_uuid=graphene.Argument(graphene.String, name="district_Uuid"),
+    )
 
     project = OrderedDjangoFilterConnectionField(
         ProjectGQLType,
@@ -192,7 +215,7 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
     project_name_validity = graphene.Field(
         ValidationMessageGQLType,
         project_name=graphene.String(required=True),
-        benefit_plan_id=graphene.String(required=True),
+        benefit_plan_id=graphene.String(required=False),
         description="Checks that the specified Project name is valid"
     )
 
@@ -639,6 +662,66 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         query = Activity.objects.filter(*filters)
         return gql_optimizer.query(query, info)
 
+    def resolve_project_sector(self, info, **kwargs):
+        Query._check_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_project_search_perms
+        )
+        filters = []
+        if "is_active" in kwargs:
+            filters.append(Q(is_active=kwargs["is_active"]))
+        query = ProjectSector.objects.filter(*filters)
+        return gql_optimizer.query(query, info)
+
+    def resolve_project_phase(self, info, **kwargs):
+        Query._check_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_project_search_perms
+        )
+        filters = []
+        if "is_active" in kwargs:
+            filters.append(Q(is_active=kwargs["is_active"]))
+        query = ProjectPhase.objects.filter(*filters)
+        return gql_optimizer.query(query, info)
+
+    def resolve_project_hotspot(self, info, **kwargs):
+        Query._check_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_project_search_perms
+        )
+        filters = append_validity_filter(**kwargs)
+        district_id = (
+            kwargs.get("district_id")
+            or kwargs.get("district_uuid")
+            or kwargs.get("district_Uuid")
+        )
+        micro_catchment_id = (
+            kwargs.get("micro_catchment_id")
+            or kwargs.get("micro_catchment_uuid")
+            or kwargs.get("micro_catchment_Uuid")
+        )
+        if micro_catchment_id:
+            filters.append(Q(micro_catchment__uuid=micro_catchment_id))
+        elif district_id:
+            filters.append(
+                Q(micro_catchment__parent__uuid=district_id)
+                | Q(villages__parent__parent__uuid=district_id)
+            )
+        query = Hotspot.objects.filter(*filters).distinct()
+        return gql_optimizer.query(query, info)
+
+    def resolve_micro_catchments(self, info, **kwargs):
+        Query._check_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_project_search_perms
+        )
+        filters = append_validity_filter(**kwargs)
+        district_id = kwargs.get("district_uuid") or kwargs.get("district_Uuid")
+        if district_id:
+            filters.append(Q(parent__uuid=district_id))
+        query = Location.objects.filter(type="W", *filters)
+        return gql_optimizer.query(query, info)
+
     def resolve_project(self, info, **kwargs):
         Query._check_permissions(
             info.context.user,
@@ -658,7 +741,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         if parent_location is not None:
             location = Location.objects.get(uuid=parent_location)
             descendant_ids = extend_allowed_locations([location.pk])
-            filters.append(Q(location__id__in=descendant_ids))
+            filters.append(
+                Q(location__id__in=descendant_ids)
+                | Q(district__id__in=descendant_ids)
+                | Q(micro_catchment__id__in=descendant_ids)
+            )
 
         query = Project.objects.filter(*filters)
         return gql_optimizer.query(query, info)
@@ -668,7 +755,7 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         if not info.context.user.has_perms(perms):
             raise PermissionDenied(_("unauthorized"))
         errors = validate_project_unique_name(
-            kwargs['project_name'], kwargs['benefit_plan_id']
+            kwargs['project_name'], kwargs.get('benefit_plan_id')
         )
         if errors:
             return ValidationMessageGQLType(

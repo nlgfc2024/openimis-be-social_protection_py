@@ -13,14 +13,43 @@ from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlan, Project, ProjectMutation, Activity,
     Beneficiary, GroupBeneficiary, BeneficiaryStatus, BenefitPlanMutation,
-    BeneficiaryProjectTimeEntry, GroupBeneficiaryProjectTimeEntry
+    BeneficiaryProjectTimeEntry, GroupBeneficiaryProjectTimeEntry,
+    ProjectSector, ProjectPhase
 )
 from social_protection.services import (
     BenefitPlanService, ProjectService,
     BeneficiaryService, GroupBeneficiaryService,
     ProjectEnrollmentService
 )
-from location.models import Location
+from location.models import Hotspot, Location
+
+
+def _pop_if_present(data, field_name):
+    if field_name in data:
+        return data.pop(field_name)
+    return None
+
+
+def _set_project_location_payload(data):
+    district_id = _pop_if_present(data, "district_id")
+    if district_id:
+        data["district"] = Location.objects.get(uuid=district_id)
+
+    micro_catchment_id = _pop_if_present(data, "micro_catchment_id")
+    if micro_catchment_id:
+        data["micro_catchment"] = Location.objects.get(uuid=micro_catchment_id)
+
+    hotspot_id = _pop_if_present(data, "hotspot_id")
+    if hotspot_id:
+        data["hotspot"] = Hotspot.objects.get(uuid=hotspot_id)
+
+    sector_id = _pop_if_present(data, "sector_id")
+    if sector_id:
+        data["sector"] = ProjectSector.objects.get(id=sector_id)
+
+    phase_id = _pop_if_present(data, "phase_id")
+    if phase_id:
+        data["phase"] = ProjectPhase.objects.get(id=phase_id)
 
 
 def check_perms_for_field(user, permission, data, field_string):
@@ -526,13 +555,19 @@ class DeleteGroupBeneficiaryMutation(
 
 
 class CreateProjectInputType(OpenIMISMutation.Input):
-    benefit_plan_id = graphene.ID(required=True)
-    name = graphene.String(required=True)
-    status = graphene.String(required=False)
-    activity_id = graphene.ID(required=True)
-    location_id = graphene.ID(required=True)
-    target_beneficiaries = graphene.Int(required=True)
-    working_days = graphene.Int(required=True)
+    benefit_plan_id = graphene.ID(required=False)
+    activity_id = graphene.ID(required=False)
+    location_id = graphene.ID(required=False)
+    name = graphene.String(required=False)
+    district_id = graphene.ID(required=True)
+    micro_catchment_id = graphene.ID(required=True)
+    hotspot_id = graphene.ID(required=True)
+    sector_id = graphene.ID(required=True)
+    phase_id = graphene.ID(required=True)
+    known_place = graphene.String(required=True)
+    target_households = graphene.Int(required=True)
+    target_beneficiaries = graphene.Int(required=False)
+    working_days = graphene.Int(required=False)
     allows_multiple_enrollments = graphene.Boolean(required=False)
 
 
@@ -552,19 +587,24 @@ class CreateProjectMutation(
 
     @classmethod
     def _mutate(cls, user, **data):
-        if "client_mutation_id" in data:
-            client_mutation_id = data.pop('client_mutation_id', None)
+        client_mutation_id = data.pop('client_mutation_id', None)
         if "client_mutation_label" in data:
             data.pop("client_mutation_label")
 
-        data["benefit_plan"] = BenefitPlan.objects.get(
-            id=data.pop("benefit_plan_id")
-        )
-        data["activity"] = Activity.objects.get(id=data.pop("activity_id"))
-        data["location"] = Location.objects.get(uuid=data.pop("location_id"))
-        data.setdefault(
-            "status", Project._meta.get_field("status").get_default()
-        )
+        benefit_plan_id = _pop_if_present(data, "benefit_plan_id")
+        if benefit_plan_id:
+            data["benefit_plan"] = BenefitPlan.objects.get(
+                id=benefit_plan_id
+            )
+        activity_id = _pop_if_present(data, "activity_id")
+        if activity_id:
+            data["activity"] = Activity.objects.get(id=activity_id)
+        location_id = _pop_if_present(data, "location_id")
+        if location_id:
+            data["location"] = Location.objects.get(uuid=location_id)
+        _set_project_location_payload(data)
+        data.setdefault("working_days", 1)
+        data.pop("status", None)
 
         service = ProjectService(user)
         res = service.create(data)
@@ -585,9 +625,15 @@ class UpdateProjectInputType(OpenIMISMutation.Input):
     id = graphene.UUID(required=True)
     benefit_plan_id = graphene.ID(required=False)
     name = graphene.String(required=False)
-    status = graphene.String(required=False)
     activity_id = graphene.ID(required=False)
     location_id = graphene.ID(required=False)
+    district_id = graphene.ID(required=False)
+    micro_catchment_id = graphene.ID(required=False)
+    hotspot_id = graphene.ID(required=False)
+    sector_id = graphene.ID(required=False)
+    phase_id = graphene.ID(required=False)
+    known_place = graphene.String(required=False)
+    target_households = graphene.Int(required=False)
     target_beneficiaries = graphene.Int(required=False)
     working_days = graphene.Int(required=False)
     allows_multiple_enrollments = graphene.Boolean(required=False)
@@ -614,16 +660,18 @@ class UpdateProjectMutation(
         if "client_mutation_label" in data:
             data.pop("client_mutation_label")
 
-        if 'benefit_plan_id' in data:
+        benefit_plan_id = _pop_if_present(data, "benefit_plan_id")
+        if benefit_plan_id:
             data["benefit_plan"] = BenefitPlan.objects.get(
-                id=data.pop("benefit_plan_id")
+                id=benefit_plan_id
             )
-        if 'activity_id' in data:
-            data["activity"] = Activity.objects.get(id=data.pop("activity_id"))
-        if 'location_id' in data:
-            data["location"] = Location.objects.get(
-                uuid=data.pop("location_id")
-            )
+        activity_id = _pop_if_present(data, "activity_id")
+        if activity_id:
+            data["activity"] = Activity.objects.get(id=activity_id)
+        location_id = _pop_if_present(data, "location_id")
+        if location_id:
+            data["location"] = Location.objects.get(uuid=location_id)
+        _set_project_location_payload(data)
 
         service = ProjectService(user)
         res = service.update(data)

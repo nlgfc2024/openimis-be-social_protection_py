@@ -7,7 +7,7 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from core import models as core_models
 from core.models import UUIDModel, ObjectMutation, MutationLog
 from individual.models import Individual, Group, IndividualDataSourceUpload
-from location.models import Location
+from location.models import Hotspot, Location
 
 
 class BeneficiaryStatus(models.TextChoices):
@@ -52,14 +52,41 @@ class Activity(core_models.HistoryBusinessModel):
         verbose_name_plural = "Activities"
 
 
+class ProjectSector(models.Model):
+    name = models.CharField(max_length=255, null=False, unique=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Project Sector"
+        verbose_name_plural = "Project Sectors"
+
+    def __str__(self):
+        return self.name
+
+
+class ProjectPhase(models.Model):
+    name = models.CharField(max_length=255, null=False, unique=True)
+    phase_number = models.PositiveSmallIntegerField(null=False, unique=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Project Phase"
+        verbose_name_plural = "Project Phases"
+        ordering = ("phase_number",)
+
+    def __str__(self):
+        return self.name
+
+
 class ProjectStatus(models.TextChoices):
     PREPARATION = "PREPARATION", _("PREPARATION")
+    INITIATED = "INITIATED", _("INITIATED")
     IN_PROGRESS = "IN_PROGRESS", _("IN PROGRESS")
     COMPLETED = "COMPLETED", _("COMPLETED")
 
 
 class Project(core_models.HistoryBusinessModel):
-    benefit_plan = models.ForeignKey(BenefitPlan, models.DO_NOTHING, null=False)
+    benefit_plan = models.ForeignKey(BenefitPlan, models.DO_NOTHING, null=True, blank=True)
     name = models.CharField(max_length=255, null=False)
     status = models.CharField(
         max_length=100,
@@ -67,11 +94,24 @@ class Project(core_models.HistoryBusinessModel):
         default=ProjectStatus.PREPARATION,
         null=False
     )
-    activity = models.ForeignKey(Activity, models.DO_NOTHING, null=False)
-    location = models.ForeignKey(Location, models.DO_NOTHING, null=False)
-    target_beneficiaries = models.SmallIntegerField(null=False)
+    activity = models.ForeignKey(Activity, models.DO_NOTHING, null=True, blank=True)
+    sector = models.ForeignKey(ProjectSector, models.DO_NOTHING, null=True, blank=True)
+    phase = models.ForeignKey(ProjectPhase, models.DO_NOTHING, null=True, blank=True)
+    location = models.ForeignKey(Location, models.DO_NOTHING, null=True, blank=True)
+    district = models.ForeignKey(Location, models.DO_NOTHING, null=True, blank=True, related_name="projects_as_district")
+    micro_catchment = models.ForeignKey(
+        Location, models.DO_NOTHING, null=True, blank=True, related_name="projects_as_micro_catchment"
+    )
+    hotspot = models.ForeignKey(Hotspot, models.DO_NOTHING, null=True, blank=True, related_name="projects")
+    known_place = models.CharField(max_length=255, null=True, blank=True)
+    target_beneficiaries = models.SmallIntegerField(null=True, blank=True)
+    target_households = models.PositiveSmallIntegerField(null=True, blank=True)
     working_days = models.SmallIntegerField(null=False)
     allows_multiple_enrollments = models.BooleanField(default=False)
+
+    @staticmethod
+    def generate_name(hotspot, sector, phase, known_place):
+        return f"{hotspot.name}-{sector.name}-Phase {phase.phase_number} - {known_place}"
 
 
 class ProjectMutation(UUIDModel, ObjectMutation):
