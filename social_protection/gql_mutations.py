@@ -558,7 +558,7 @@ class CreateProjectInputType(OpenIMISMutation.Input):
     district_id = graphene.ID(required=True)
     micro_catchment_id = graphene.ID(required=True)
     sector_id = graphene.ID(required=True)
-    phase_id = graphene.ID(required=True)
+    phase_id = graphene.ID(required=False)
     known_place = graphene.String(required=True)
     target_households = graphene.Int(required=True)
     target_beneficiaries = graphene.Int(required=False)

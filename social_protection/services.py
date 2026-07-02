@@ -937,7 +937,6 @@ class ProjectService(BaseService):
             "district",
             "micro_catchment",
             "sector",
-            "phase",
             "known_place",
             "target_households",
         ]
@@ -954,10 +953,6 @@ class ProjectService(BaseService):
         target_households = obj_data.get("target_households")
         if target_households < 1 or target_households > 200:
             raise ValidationError(_("Target households must be between 1 and 200."))
-
-        phase = obj_data["phase"]
-        if not phase.is_active:
-            raise ValidationError(_("Project phase must be active."))
 
         sector = obj_data["sector"]
         if hasattr(sector, "is_active") and not sector.is_active:
@@ -1002,16 +997,15 @@ class ProjectService(BaseService):
             raise ValidationError(_("Micro-catchment must belong to the selected district."))
 
     def _set_generated_project_name(self, obj_data):
-        if all(obj_data.get(field) for field in ("micro_catchment", "sector", "phase", "known_place")):
+        if all(obj_data.get(field) for field in ("micro_catchment", "sector", "known_place")):
             obj_data["name"] = Project.generate_name(
                 obj_data["micro_catchment"],
                 obj_data["sector"],
-                obj_data["phase"],
                 obj_data["known_place"],
             )
 
     def _set_generated_project_name_for_update(self, obj_data):
-        name_fields = {"micro_catchment", "sector", "phase", "known_place"}
+        name_fields = {"micro_catchment", "sector", "known_place"}
         if not name_fields.intersection(obj_data):
             return
 
@@ -1022,7 +1016,6 @@ class ProjectService(BaseService):
         generated_name_data = {
             "micro_catchment": obj_data.get("micro_catchment", project.micro_catchment),
             "sector": obj_data.get("sector", project.sector),
-            "phase": obj_data.get("phase", project.phase),
             "known_place": obj_data.get("known_place", project.known_place),
         }
         self._set_generated_project_name(generated_name_data)

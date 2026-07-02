@@ -109,8 +109,8 @@ class Project(core_models.HistoryBusinessModel):
     allows_multiple_enrollments = models.BooleanField(default=False)
 
     @staticmethod
-    def generate_name(micro_catchment, sector, phase, known_place):
-        return f"{micro_catchment.name}-{sector.name}-Phase {phase.phase_number} - {known_place}"
+    def generate_name(micro_catchment, sector, known_place):
+        return f"{micro_catchment.name}-{sector.name} - {known_place}"
 
 
 class ProjectMutation(UUIDModel, ObjectMutation):

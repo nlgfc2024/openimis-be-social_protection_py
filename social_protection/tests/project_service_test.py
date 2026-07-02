@@ -3,7 +3,7 @@ from django.test import TestCase, override_settings
 
 from core.test_helpers import LogInHelper
 from location.test_helpers import create_test_village
-from social_protection.models import Project, ProjectPhase, ProjectSector, ProjectStatus
+from social_protection.models import Project, ProjectSector, ProjectStatus
 from social_protection.services import ProjectService
 
 
@@ -20,14 +20,12 @@ class ProjectServiceTest(TestCase):
         self.micro_catchment = self.village.parent
         self.district = self.micro_catchment.parent
         self.sector = ProjectSector.objects.create(name="Roads")
-        self.phase = ProjectPhase.objects.create(name="Phase One", phase_number=1)
 
     def _payload(self, **overrides):
         payload = {
             "district": self.district,
             "micro_catchment": self.micro_catchment,
             "sector": self.sector,
-            "phase": self.phase,
             "known_place": "Bridge",
             "target_households": 120,
             "working_days": 10,
@@ -41,7 +39,7 @@ class ProjectServiceTest(TestCase):
         self.assertTrue(result["success"], result.get("detail"))
         project = Project.objects.get(uuid=result["data"]["uuid"])
         self.assertEqual(project.status, ProjectStatus.PREPARATION)
-        self.assertEqual(project.name, f"{self.micro_catchment.name}-Roads-Phase 1 - Bridge")
+        self.assertEqual(project.name, f"{self.micro_catchment.name}-Roads - Bridge")
 
     def test_create_rejects_target_households_below_one(self):
         with self.assertRaises(ValidationError):
@@ -57,16 +55,6 @@ class ProjectServiceTest(TestCase):
 
         with self.assertRaises(ValidationError):
             self.service.create(self._payload(district=other_district))
-
-    def test_create_rejects_inactive_phase(self):
-        inactive_phase = ProjectPhase.objects.create(
-            name="Inactive Phase",
-            phase_number=2,
-            is_active=False,
-        )
-
-        with self.assertRaises(ValidationError):
-            self.service.create(self._payload(phase=inactive_phase))
 
     def test_status_transition_is_forward_only_one_step(self):
         result = self.service.create(self._payload())
