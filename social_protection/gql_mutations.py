@@ -1,3 +1,5 @@
+import json
+
 import graphene as graphene
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
@@ -21,6 +23,49 @@ from social_protection.services import (
     ProjectEnrollmentService
 )
 from location.models import Location
+
+
+def _pop_project_json_ext_fields(data, existing_json_ext=None):
+    input_json_ext = data.pop("json_ext", None)
+    json_ext = existing_json_ext or input_json_ext or {}
+    if isinstance(json_ext, str):
+        json_ext = json.loads(json_ext)
+    json_ext = dict(json_ext)
+
+    micro_catchment_id = data.pop("micro_catchment_id", None)
+    if micro_catchment_id is not None:
+        json_ext["microCatchmentId"] = str(micro_catchment_id)
+
+    hotspot_id = data.pop("hotspot_id", None)
+    if hotspot_id is not None:
+        json_ext["hotspotId"] = str(hotspot_id)
+
+    hotspot_name = data.pop("hotspot_name", None)
+    if hotspot_name is not None:
+        json_ext["hotspotName"] = hotspot_name
+
+    known_place = data.pop("known_place", None)
+    if known_place is not None:
+        json_ext["knownPlace"] = known_place
+
+    return json_ext
+
+
+def _normalize_project_alias_fields(data):
+    if "district_id" in data and "location_id" not in data:
+        data["location_id"] = data.pop("district_id")
+    else:
+        data.pop("district_id", None)
+
+    if "sector_id" in data and "activity_id" not in data:
+        data["activity_id"] = data.pop("sector_id")
+    else:
+        data.pop("sector_id", None)
+
+    if "target_households" in data and "target_beneficiaries" not in data:
+        data["target_beneficiaries"] = data.pop("target_households")
+    else:
+        data.pop("target_households", None)
 
 
 def check_perms_for_field(user, permission, data, field_string):
@@ -530,8 +575,15 @@ class CreateProjectInputType(OpenIMISMutation.Input):
     name = graphene.String(required=True)
     status = graphene.String(required=False)
     activity_id = graphene.ID(required=True)
+    sector_id = graphene.ID(required=False)
     location_id = graphene.ID(required=True)
+    district_id = graphene.ID(required=False)
+    micro_catchment_id = graphene.UUID(required=False)
+    hotspot_id = graphene.String(required=False)
+    hotspot_name = graphene.String(required=False)
+    known_place = graphene.String(required=False)
     target_beneficiaries = graphene.Int(required=True)
+    target_households = graphene.Int(required=False)
     working_days = graphene.Int(required=True)
     allows_multiple_enrollments = graphene.Boolean(required=False)
 
@@ -556,6 +608,9 @@ class CreateProjectMutation(
             client_mutation_id = data.pop('client_mutation_id', None)
         if "client_mutation_label" in data:
             data.pop("client_mutation_label")
+
+        _normalize_project_alias_fields(data)
+        data["json_ext"] = _pop_project_json_ext_fields(data)
 
         data["benefit_plan"] = BenefitPlan.objects.get(
             id=data.pop("benefit_plan_id")
@@ -587,8 +642,15 @@ class UpdateProjectInputType(OpenIMISMutation.Input):
     name = graphene.String(required=False)
     status = graphene.String(required=False)
     activity_id = graphene.ID(required=False)
+    sector_id = graphene.ID(required=False)
     location_id = graphene.ID(required=False)
+    district_id = graphene.ID(required=False)
+    micro_catchment_id = graphene.UUID(required=False)
+    hotspot_id = graphene.String(required=False)
+    hotspot_name = graphene.String(required=False)
+    known_place = graphene.String(required=False)
     target_beneficiaries = graphene.Int(required=False)
+    target_households = graphene.Int(required=False)
     working_days = graphene.Int(required=False)
     allows_multiple_enrollments = graphene.Boolean(required=False)
 
@@ -613,6 +675,13 @@ class UpdateProjectMutation(
             data.pop("client_mutation_id")
         if "client_mutation_label" in data:
             data.pop("client_mutation_label")
+
+        _normalize_project_alias_fields(data)
+        project = Project.objects.filter(id=data.get("id")).first()
+        data["json_ext"] = _pop_project_json_ext_fields(
+            data,
+            project.json_ext if project else None
+        )
 
         if 'benefit_plan_id' in data:
             data["benefit_plan"] = BenefitPlan.objects.get(

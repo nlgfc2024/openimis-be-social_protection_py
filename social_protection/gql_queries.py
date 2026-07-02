@@ -11,7 +11,8 @@ from core import prefix_filterset, ExtendedConnection
 from individual.models import GroupIndividual
 from individual.gql_queries import IndividualGQLType, GroupGQLType, \
     IndividualDataSourceUploadGQLType
-from location.models import Location
+from location.gql_queries import LocationGQLType, MicroCatchmentGQLType
+from location.models import Location, MicroCatchment
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     Beneficiary,
@@ -504,6 +505,11 @@ class ActivityGQLType(DjangoObjectType, JsonExtMixin):
         connection_class = ExtendedConnection
 
 
+class ProjectHotspotSampleGQLType(ObjectType):
+    id = graphene.String()
+    name = graphene.String()
+
+
 class ProjectFilter(django_filters.FilterSet):
     class Meta:
         model = Project
@@ -526,6 +532,53 @@ class ProjectFilter(django_filters.FilterSet):
 
 class ProjectGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
+    district = graphene.Field(LocationGQLType)
+    micro_catchment = graphene.Field(MicroCatchmentGQLType)
+    hotspot = graphene.Field(ProjectHotspotSampleGQLType)
+    sector = graphene.Field(ActivityGQLType)
+    known_place = graphene.String()
+    target_households = graphene.Int()
+
+    def resolve_district(self, info):
+        location = self.location
+        while location and location.type != 'D':
+            location = location.parent
+        return location
+
+    def resolve_micro_catchment(self, info):
+        json_ext = self.json_ext or {}
+        micro_catchment_uuid = (
+            json_ext.get('micro_catchment_uuid')
+            or json_ext.get('microCatchmentUuid')
+            or json_ext.get('microCatchmentId')
+        )
+        if not micro_catchment_uuid:
+            return None
+        return MicroCatchment.objects.filter(
+            uuid=micro_catchment_uuid,
+            validity_to__isnull=True,
+        ).first()
+
+    def resolve_hotspot(self, info):
+        json_ext = self.json_ext or {}
+        hotspot_id = json_ext.get('hotspot_id') or json_ext.get('hotspotId')
+        hotspot_name = json_ext.get('hotspot_name') or json_ext.get('hotspotName')
+        if not hotspot_id and not hotspot_name:
+            return None
+        return {
+            'id': hotspot_id,
+            'name': hotspot_name or hotspot_id,
+        }
+
+    def resolve_sector(self, info):
+        return self.activity
+
+    def resolve_known_place(self, info):
+        json_ext = self.json_ext or {}
+        return json_ext.get('known_place') or json_ext.get('knownPlace') or ''
+
+    def resolve_target_households(self, info):
+        return self.target_beneficiaries
 
     class Meta:
         model = Project
