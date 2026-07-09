@@ -17,7 +17,7 @@ from individual.models import (
     IndividualDataSource,
     Individual,
 )
-from location.models import Location, LocationManager
+from location.models import LocationManager
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlan,
@@ -898,7 +898,7 @@ class ProjectService(BaseService):
     @register_service_signal("project_service.create")
     def create(self, obj_data):
         obj_data.pop("status", None)
-        obj_data["status"] = ProjectStatus.PREPARATION
+        obj_data["status"] = ProjectStatus.INITIATED
         self._validate_project_creation_payload(obj_data)
         self._set_generated_project_name(obj_data)
         return super().create(obj_data)
@@ -938,7 +938,6 @@ class ProjectService(BaseService):
             "micro_catchment",
             "hotspot",
             "sector",
-            "phase",
             "known_place",
             "target_households",
         ]
@@ -956,10 +955,6 @@ class ProjectService(BaseService):
         if target_households < 1 or target_households > 200:
             raise ValidationError(_("Target households must be between 1 and 200."))
 
-        phase = obj_data["phase"]
-        if not phase.is_active:
-            raise ValidationError(_("Project phase must be active."))
-
         sector = obj_data["sector"]
         if hasattr(sector, "is_active") and not sector.is_active:
             raise ValidationError(_("Project sector must be active."))
@@ -974,10 +969,6 @@ class ProjectService(BaseService):
         if "target_households" in obj_data and obj_data["target_households"] is not None:
             if obj_data["target_households"] < 1 or obj_data["target_households"] > 200:
                 raise ValidationError(_("Target households must be between 1 and 200."))
-
-        phase = obj_data.get("phase")
-        if phase and not phase.is_active:
-            raise ValidationError(_("Project phase must be active."))
 
         sector = obj_data.get("sector")
         if sector and hasattr(sector, "is_active") and not sector.is_active:
@@ -997,30 +988,23 @@ class ProjectService(BaseService):
         user = getattr(self.user, "_u", self.user)
         if user and not LocationManager().is_allowed(user, [district.id]):
             raise ValidationError(_("Selected district is not allowed for this user."))
-        if district.type != "D":
+        if district.type not in ("D", "R"):
             raise ValidationError(_("Selected district must be a district."))
-        if micro_catchment.type != "W":
-            raise ValidationError(_("Selected micro-catchment must be a micro-catchment."))
-        if micro_catchment.parent_id != district.id:
+        if micro_catchment.district_id != district.id:
             raise ValidationError(_("Micro-catchment must belong to the selected district."))
         if hotspot.micro_catchment_id and hotspot.micro_catchment_id != micro_catchment.id:
             raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
-        if not hotspot.micro_catchment_id:
-            village_ids = hotspot.villages.values_list("id", flat=True)
-            if not Location.objects.filter(id__in=village_ids, parent=micro_catchment).exists():
-                raise ValidationError(_("Hotspot must belong to the selected micro-catchment."))
 
     def _set_generated_project_name(self, obj_data):
-        if all(obj_data.get(field) for field in ("hotspot", "sector", "phase", "known_place")):
+        if all(obj_data.get(field) for field in ("hotspot", "sector", "known_place")):
             obj_data["name"] = Project.generate_name(
                 obj_data["hotspot"],
                 obj_data["sector"],
-                obj_data["phase"],
                 obj_data["known_place"],
             )
 
     def _set_generated_project_name_for_update(self, obj_data):
-        name_fields = {"hotspot", "sector", "phase", "known_place"}
+        name_fields = {"hotspot", "sector", "known_place"}
         if not name_fields.intersection(obj_data):
             return
 
@@ -1031,7 +1015,6 @@ class ProjectService(BaseService):
         generated_name_data = {
             "hotspot": obj_data.get("hotspot", project.hotspot),
             "sector": obj_data.get("sector", project.sector),
-            "phase": obj_data.get("phase", project.phase),
             "known_place": obj_data.get("known_place", project.known_place),
         }
         self._set_generated_project_name(generated_name_data)

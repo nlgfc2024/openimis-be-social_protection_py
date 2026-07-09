@@ -42,7 +42,7 @@ from social_protection.gql_queries import (
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
     BenefitPlanHistoryGQLType,
     ActivityGQLType, ProjectGQLType, ProjectSectorGQLType, ProjectPhaseGQLType,
-    ProjectHotspotGQLType, MicroCatchmentGQLType, ProjectHistoryGQLType,
+    ProjectHotspotGQLType, ProjectMicroCatchmentGQLType, ProjectHistoryGQLType,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -62,7 +62,7 @@ from social_protection.validation import (
 )
 import graphene_django_optimizer as gql_optimizer
 from location.apps import LocationConfig
-from location.models import extend_allowed_locations, Hotspot, Location
+from location.models import extend_allowed_locations, Hotspot, Location, MicroCatchment
 
 
 def patch_details(beneficiary_df: pd.DataFrame):
@@ -198,7 +198,7 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         micro_catchment_uuid=graphene.Argument(graphene.String, name="microCatchment_Uuid"),
     )
     micro_catchments = OrderedDjangoFilterConnectionField(
-        MicroCatchmentGQLType,
+        ProjectMicroCatchmentGQLType,
         orderBy=graphene.List(of_type=graphene.String),
         district_uuid=graphene.Argument(graphene.String, name="district_Uuid"),
     )
@@ -704,7 +704,7 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             filters.append(Q(micro_catchment__uuid=micro_catchment_id))
         elif district_id:
             filters.append(
-                Q(micro_catchment__parent__uuid=district_id)
+                Q(micro_catchment__district__uuid=district_id)
                 | Q(villages__parent__parent__uuid=district_id)
             )
         query = Hotspot.objects.filter(*filters).distinct()
@@ -718,8 +718,8 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         filters = append_validity_filter(**kwargs)
         district_id = kwargs.get("district_uuid") or kwargs.get("district_Uuid")
         if district_id:
-            filters.append(Q(parent__uuid=district_id))
-        query = Location.objects.filter(type="W", *filters)
+            filters.append(Q(district__uuid=district_id))
+        query = MicroCatchment.objects.filter(*filters)
         return gql_optimizer.query(query, info)
 
     def resolve_project(self, info, **kwargs):

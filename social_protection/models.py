@@ -7,7 +7,7 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from core import models as core_models
 from core.models import UUIDModel, ObjectMutation, MutationLog
 from individual.models import Individual, Group, IndividualDataSourceUpload
-from location.models import Hotspot, Location
+from location.models import Hotspot, Location, MicroCatchment
 
 
 class BeneficiaryStatus(models.TextChoices):
@@ -100,7 +100,7 @@ class Project(core_models.HistoryBusinessModel):
     location = models.ForeignKey(Location, models.DO_NOTHING, null=True, blank=True)
     district = models.ForeignKey(Location, models.DO_NOTHING, null=True, blank=True, related_name="projects_as_district")
     micro_catchment = models.ForeignKey(
-        Location, models.DO_NOTHING, null=True, blank=True, related_name="projects_as_micro_catchment"
+        MicroCatchment, models.DO_NOTHING, null=True, blank=True, related_name="projects"
     )
     hotspot = models.ForeignKey(Hotspot, models.DO_NOTHING, null=True, blank=True, related_name="projects")
     known_place = models.CharField(max_length=255, null=True, blank=True)
@@ -110,8 +110,8 @@ class Project(core_models.HistoryBusinessModel):
     allows_multiple_enrollments = models.BooleanField(default=False)
 
     @staticmethod
-    def generate_name(hotspot, sector, phase, known_place):
-        return f"{hotspot.name}-{sector.name}-Phase {phase.phase_number} - {known_place}"
+    def generate_name(hotspot, sector, known_place):
+        return f"{hotspot.name}-{sector.name}-{known_place}"
 
 
 class ProjectMutation(UUIDModel, ObjectMutation):

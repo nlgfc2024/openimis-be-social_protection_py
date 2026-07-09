@@ -5,7 +5,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("location", "0023_hotspot_micro_catchment_villages"),
+        ("location", "0025_hotspot_micro_catchment_villages"),
         ("social_protection", "0023_multi_enrollment_and_time_entry"),
     ]
 

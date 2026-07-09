@@ -11,7 +11,7 @@ from core import prefix_filterset, ExtendedConnection
 from individual.models import GroupIndividual
 from individual.gql_queries import IndividualGQLType, GroupGQLType, \
     IndividualDataSourceUploadGQLType
-from location.models import Hotspot, Location
+from location.models import Hotspot, Location, MicroCatchment
 from location.gql_queries import LocationGQLType
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
@@ -539,7 +539,7 @@ class ProjectPhaseGQLType(DjangoObjectType):
 
 class ProjectHotspotGQLType(DjangoObjectType):
     district = graphene.Field(LocationGQLType)
-    micro_catchment = graphene.Field(LocationGQLType)
+    micro_catchment = graphene.Field(lambda: ProjectMicroCatchmentGQLType)
 
     class Meta:
         model = Hotspot
@@ -554,34 +554,33 @@ class ProjectHotspotGQLType(DjangoObjectType):
 
     def resolve_district(self, info):
         if self.micro_catchment_id:
-            return self.micro_catchment.parent
-        village = self.villages.filter(*Location.filter_validity()).first() or self.village
+            return self.micro_catchment.district
+        village = self.villages.filter(*Location.filter_validity()).first()
         return village.parent.parent if village and village.parent else None
 
     def resolve_micro_catchment(self, info):
         if self.micro_catchment_id:
             return self.micro_catchment
-        village = self.villages.filter(*Location.filter_validity()).first() or self.village
-        return village.parent if village else None
+        return None
 
 
-class MicroCatchmentGQLType(DjangoObjectType):
+class ProjectMicroCatchmentGQLType(DjangoObjectType):
     district = graphene.Field(LocationGQLType)
 
     class Meta:
-        model = Location
+        model = MicroCatchment
         interfaces = (graphene.relay.Node,)
         filter_fields = {
             "id": ["exact"],
             "uuid": ["exact", "in"],
             "code": ["exact", "istartswith", "icontains", "iexact"],
             "name": ["exact", "istartswith", "icontains", "iexact"],
-            "parent__uuid": ["exact", "in"],
+            "district__uuid": ["exact", "in"],
         }
         connection_class = ExtendedConnection
 
     def resolve_district(self, info):
-        return self.parent
+        return self.district
 
 
 class ProjectFilter(django_filters.FilterSet):
