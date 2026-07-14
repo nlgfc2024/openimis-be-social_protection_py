@@ -617,10 +617,12 @@ class ProjectGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
 
     class Meta:
+        name = "SocialProtectionProjectGQLType"
         model = Project
         interfaces = (graphene.relay.Node,)
         filterset_class = ProjectFilter
         connection_class = ExtendedConnection
+        convert_choices_to_enum = False
 
 
 class ProjectHistoryGQLType(DjangoObjectType):
@@ -630,6 +632,7 @@ class ProjectHistoryGQLType(DjangoObjectType):
         return self.user_updated
 
     class Meta:
+        name = "SocialProtectionProjectHistoryGQLType"
         model = Project.history.model
         interfaces = (graphene.relay.Node,)
         filter_fields = {
@@ -655,3 +658,4 @@ class ProjectHistoryGQLType(DjangoObjectType):
             "version": ["exact"],
         }
         connection_class = ExtendedConnection
+        convert_choices_to_enum = False
