@@ -18,12 +18,6 @@ from social_protection.models import (
     BenefitPlan,
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
-    Activity,
-    Project,
-    BeneficiaryProjectTimeEntry,
-    GroupBeneficiaryProjectTimeEntry,
-    BeneficiaryProjectEnrollment,
-    GroupBeneficiaryProjectEnrollment,
 )
 
 
@@ -83,20 +77,6 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()
 
 
-class BeneficiaryProjectTimeEntryGQLType(DjangoObjectType):
-    class Meta:
-        model = BeneficiaryProjectTimeEntry
-        fields = ("id", "day_number", "percent_complete")
-        interfaces = (graphene.relay.Node,)
-
-
-class GroupBeneficiaryProjectTimeEntryGQLType(DjangoObjectType):
-    class Meta:
-        model = GroupBeneficiaryProjectTimeEntry
-        fields = ("id", "day_number", "percent_complete")
-        interfaces = (graphene.relay.Node,)
-
-
 class BeneficiarySharedFilterMixin:
     location_prefix = None  # must be defined in subclass
 
@@ -140,62 +120,6 @@ class BeneficiarySharedFilterMixin:
 
         return queryset.filter(location_q) if location_q else queryset
 
-    def filter_eligible_for_project(self, queryset, name, value):
-        """Filter beneficiaries eligible for enrollment in a project.
-
-        If project.allows_multiple_enrollments is True:
-            - Include beneficiaries not enrolled in any exclusive project
-            - Include beneficiaries already enrolled in this project
-        If project.allows_multiple_enrollments is False:
-            - Include beneficiaries not enrolled in any project
-            - Include beneficiaries already enrolled in this project
-        """
-        if not value:
-            return queryset
-
-        project = Project.objects.get(id=value)
-        enrollment_model = self._get_enrollment_model()
-        beneficiary_field = self._get_beneficiary_field()
-
-        if project.allows_multiple_enrollments:
-            enrolled_in_exclusive = set(
-                enrollment_model.objects.filter(
-                    project__allows_multiple_enrollments=False,
-                    is_deleted=False
-                ).exclude(
-                    project_id=project.id
-                ).values_list(f'{beneficiary_field}_id', flat=True)
-            )
-            return queryset.exclude(id__in=enrolled_in_exclusive)
-        else:
-            enrolled_elsewhere = set(
-                enrollment_model.objects.filter(
-                    is_deleted=False
-                ).exclude(
-                    project_id=project.id
-                ).values_list(f'{beneficiary_field}_id', flat=True)
-            )
-            return queryset.exclude(id__in=enrolled_elsewhere)
-
-    def filter_enrolled_in_project(self, queryset, name, value):
-        if not value:
-            return queryset
-        enrollment_model = self._get_enrollment_model()
-        beneficiary_field = self._get_beneficiary_field()
-        enrolled_ids = enrollment_model.objects.filter(
-            project_id=value,
-            is_deleted=False
-        ).values_list(f'{beneficiary_field}_id', flat=True)
-        return queryset.filter(id__in=enrolled_ids)
-
-    def _get_enrollment_model(self):
-        raise NotImplementedError(
-            "Subclass must implement _get_enrollment_model")
-
-    def _get_beneficiary_field(self):
-        raise NotImplementedError(
-            "Subclass must implement _get_beneficiary_field")
-
 
 class BeneficiaryFilter(
     django_filters.FilterSet, BeneficiarySharedFilterMixin
@@ -204,10 +128,6 @@ class BeneficiaryFilter(
     is_eligible = django_filters.BooleanFilter(method='filter_is_eligible')
     search = django_filters.CharFilter(method='filter_search')
     location = django_filters.CharFilter(method='filter_location')
-    eligible_for_project = django_filters.CharFilter(
-        method='filter_eligible_for_project')
-    enrolled_in_project = django_filters.CharFilter(
-        method='filter_enrolled_in_project')
 
     class Meta:
         model = Beneficiary
@@ -226,12 +146,6 @@ class BeneficiaryFilter(
             "is_deleted": ["exact"],
             "version": ["exact"],
         }
-
-    def _get_enrollment_model(self):
-        return BeneficiaryProjectEnrollment
-
-    def _get_beneficiary_field(self):
-        return 'beneficiary'
 
     def filter_search(self, queryset, name, value):
         if not value:
@@ -255,44 +169,21 @@ class BeneficiaryFilter(
         )
 
 
-class BeneficiaryProjectEnrollmentGQLType(DjangoObjectType):
-    uuid = graphene.String(source='uuid')
-    time_entries = graphene.List(BeneficiaryProjectTimeEntryGQLType)
-
-    class Meta:
-        model = BeneficiaryProjectEnrollment
-        interfaces = (graphene.relay.Node,)
-        filter_fields = {
-            "id": ["exact"],
-            "project__id": ["exact"],
-            "is_deleted": ["exact"],
-        }
-        connection_class = ExtendedConnection
-
-    def resolve_time_entries(self, info, **kwargs):
-        qs = BeneficiaryProjectTimeEntry.objects.filter(
-            enrollment=self, is_deleted=False)
-        return gql_optimizer.query(qs, info)
-
-
 class BeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     is_eligible = graphene.Boolean()
-    project_enrollments = graphene.List(BeneficiaryProjectEnrollmentGQLType)
 
     class Meta:
         model = Beneficiary
         interfaces = (graphene.relay.Node,)
         filterset_class = BeneficiaryFilter
         connection_class = ExtendedConnection
+        # Project enrollment is owned by project_social_protection; do not expose
+        # the reverse relation here (query it via that module instead).
+        exclude = ("project_enrollments",)
 
     def resolve_is_eligible(self, info):
         return self.is_eligible
-
-    def resolve_project_enrollments(self, info, **kwargs):
-        qs = BeneficiaryProjectEnrollment.objects.filter(
-            beneficiary=self, is_deleted=False)
-        return gql_optimizer.query(qs, info)
 
 
 class GroupBeneficiaryFilter(
@@ -302,10 +193,6 @@ class GroupBeneficiaryFilter(
     is_eligible = django_filters.BooleanFilter(method='filter_is_eligible')
     search = django_filters.CharFilter(method='filter_search')
     location = django_filters.CharFilter(method='filter_location')
-    eligible_for_project = django_filters.CharFilter(
-        method='filter_eligible_for_project')
-    enrolled_in_project = django_filters.CharFilter(
-        method='filter_enrolled_in_project')
 
     class Meta:
         model = GroupBeneficiary
@@ -324,12 +211,6 @@ class GroupBeneficiaryFilter(
             "is_deleted": ["exact"],
             "version": ["exact"],
         }
-
-    def _get_enrollment_model(self):
-        return GroupBeneficiaryProjectEnrollment
-
-    def _get_beneficiary_field(self):
-        return 'group_beneficiary'
 
     def filter_search(self, queryset, name, value):
         if not value:
@@ -360,45 +241,21 @@ class GroupBeneficiaryFilter(
         )
 
 
-class GroupBeneficiaryProjectEnrollmentGQLType(DjangoObjectType):
-    uuid = graphene.String(source='uuid')
-    time_entries = graphene.List(GroupBeneficiaryProjectTimeEntryGQLType)
-
-    class Meta:
-        model = GroupBeneficiaryProjectEnrollment
-        interfaces = (graphene.relay.Node,)
-        filter_fields = {
-            "id": ["exact"],
-            "project__id": ["exact"],
-            "is_deleted": ["exact"],
-        }
-        connection_class = ExtendedConnection
-
-    def resolve_time_entries(self, info, **kwargs):
-        qs = GroupBeneficiaryProjectTimeEntry.objects.filter(
-            enrollment=self, is_deleted=False)
-        return gql_optimizer.query(qs, info)
-
-
 class GroupBeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     is_eligible = graphene.Boolean()
-    project_enrollments = graphene.List(
-        GroupBeneficiaryProjectEnrollmentGQLType)
 
     class Meta:
         model = GroupBeneficiary
         interfaces = (graphene.relay.Node,)
         filterset_class = GroupBeneficiaryFilter
         connection_class = ExtendedConnection
+        # Project enrollment is owned by project_social_protection; do not expose
+        # the reverse relation here (query it via that module instead).
+        exclude = ("project_enrollments",)
 
     def resolve_is_eligible(self, info):
         return self.is_eligible
-
-    def resolve_project_enrollments(self, info, **kwargs):
-        qs = GroupBeneficiaryProjectEnrollment.objects.filter(
-            group_beneficiary=self, is_deleted=False)
-        return gql_optimizer.query(qs, info)
 
 
 class BenefitPlanDataUploadQGLType(DjangoObjectType, JsonExtMixin):
@@ -478,84 +335,3 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
 
     def resolve_has_payment_plans(self, info):
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()
-
-
-class ActivityFilter(django_filters.FilterSet):
-    class Meta:
-        model = Activity
-        fields = {
-            "id": ["exact"],
-            "name": ["exact", "iexact", "startswith", "istartswith",
-                     "contains", "icontains"],
-            "date_created": ["exact", "lt", "lte", "gt", "gte"],
-            "date_updated": ["exact", "lt", "lte", "gt", "gte"],
-            "is_deleted": ["exact"],
-            "version": ["exact"],
-        }
-
-
-class ActivityGQLType(DjangoObjectType, JsonExtMixin):
-    uuid = graphene.String(source='uuid')
-
-    class Meta:
-        model = Activity
-        interfaces = (graphene.relay.Node,)
-        filterset_class = ActivityFilter
-        connection_class = ExtendedConnection
-
-
-class ProjectFilter(django_filters.FilterSet):
-    class Meta:
-        model = Project
-        fields = {
-            "id": ["exact"],
-            "name": ["exact", "iexact", "startswith", "istartswith",
-                     "contains", "icontains"],
-            'status': ['exact', 'icontains'],
-            'benefit_plan__id': ['exact'],
-            'activity__id': ['exact'],
-            'location__id': ['exact'],
-            'target_beneficiaries': ['exact', 'gte', 'lte'],
-            'working_days': ['exact', 'gte', 'lte'],
-            "date_created": ["exact", "lt", "lte", "gt", "gte"],
-            "date_updated": ["exact", "lt", "lte", "gt", "gte"],
-            "is_deleted": ["exact"],
-            "version": ["exact"],
-        }
-
-
-class ProjectGQLType(DjangoObjectType, JsonExtMixin):
-    uuid = graphene.String(source='uuid')
-
-    class Meta:
-        model = Project
-        interfaces = (graphene.relay.Node,)
-        filterset_class = ProjectFilter
-        connection_class = ExtendedConnection
-
-
-class ProjectHistoryGQLType(DjangoObjectType):
-    uuid = graphene.String(source='uuid')
-
-    def resolve_user_updated(self, info):
-        return self.user_updated
-
-    class Meta:
-        model = Project.history.model
-        interfaces = (graphene.relay.Node,)
-        filter_fields = {
-            "id": ["exact"],
-            "name": ["exact", "iexact", "startswith", "istartswith",
-                     "contains", "icontains"],
-            'status': ['exact', 'icontains'],
-            'benefit_plan__id': ['exact'],
-            'activity__id': ['exact'],
-            'location__id': ['exact'],
-            'target_beneficiaries': ['exact', 'gte', 'lte'],
-            'working_days': ['exact', 'gte', 'lte'],
-            "date_created": ["exact", "lt", "lte", "gt", "gte"],
-            "date_updated": ["exact", "lt", "lte", "gt", "gte"],
-            "is_deleted": ["exact"],
-            "version": ["exact"],
-        }
-        connection_class = ExtendedConnection

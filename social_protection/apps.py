@@ -23,13 +23,9 @@ DEFAULT_CONFIG = {
     "gql_schema_create_perms": ["171002"],
     "gql_schema_update_perms": ["171003"],
     "gql_schema_delete_perms": ["171004"],
-    "gql_activity_search_perms": ["208001"],
-    "gql_project_search_perms": ["209001"],
-    "gql_project_create_perms": ["209002"],
-    "gql_project_update_perms": ["209003"],
-    "gql_project_delete_perms": ["209004"],
-    "gql_project_beneficiary_enroll_perms": ["209005"],
-    "gql_project_beneficiary_time_entry_perms": ["209006"],
+    # Activity/project rights (208001, 209001–209006) now belong to
+    # project_social_protection; removed here to avoid dual ownership. The seeding
+    # migration social_protection/0017 that grants them to admin is left in place.
 
 
     # Create task for model instead of performing crud action
@@ -89,13 +85,6 @@ class SocialProtectionConfig(AppConfig):
     gql_schema_create_perms = None
     gql_schema_update_perms = None
     gql_schema_delete_perms = None
-    gql_activity_search_perms = None
-    gql_project_search_perms = None
-    gql_project_create_perms = None
-    gql_project_update_perms = None
-    gql_project_delete_perms = None
-    gql_project_beneficiary_enroll_perms = None
-    gql_project_beneficiary_time_entry_perms = None
 
     gql_check_benefit_plan_update = None
     gql_check_beneficiary_crud = None
