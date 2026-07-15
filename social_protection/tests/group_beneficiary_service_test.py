@@ -7,21 +7,23 @@ from individual.models import Group
 
 from social_protection.models import (
     BenefitPlan, GroupBeneficiary,
+)
+from project_social_protection.models import (
     GroupBeneficiaryProjectTimeEntry,
     GroupBeneficiaryProjectEnrollment,
 )
-from social_protection.services import (
-    GroupBeneficiaryService, ProjectEnrollmentService
-)
+from social_protection.services import GroupBeneficiaryService
+from project_social_protection.services import ProjectEnrollmentService
 from social_protection.tests.data import (
     service_beneficiary_add_payload,
     service_beneficiary_update_status_active_payload,
 )
 from core.test_helpers import LogInHelper
 from social_protection.tests.test_helpers import (
-    create_benefit_plan, create_group, create_project,
+    create_benefit_plan, create_group,
     create_group_with_individual, add_group_to_benefit_plan,
 )
+from project_social_protection.tests.test_helpers import create_project
 
 
 class GroupBeneficiaryServiceTest(TestCase):

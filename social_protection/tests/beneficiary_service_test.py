@@ -8,12 +8,13 @@ from individual.models import Individual
 from social_protection.models import (
     Beneficiary,
     BenefitPlan,
+)
+from project_social_protection.models import (
     BeneficiaryProjectTimeEntry,
-    BeneficiaryProjectEnrollment
+    BeneficiaryProjectEnrollment,
 )
-from social_protection.services import (
-    BeneficiaryService, ProjectEnrollmentService
-)
+from social_protection.services import BeneficiaryService
+from project_social_protection.services import ProjectEnrollmentService
 from social_protection.tests.data import (
     service_beneficiary_add_payload,
     service_beneficiary_update_status_active_payload
@@ -22,9 +23,9 @@ from core.test_helpers import LogInHelper
 from social_protection.tests.test_helpers import (
     create_benefit_plan,
     create_individual,
-    create_project,
     add_individual_to_benefit_plan,
 )
+from project_social_protection.tests.test_helpers import create_project
 
 
 class BeneficiaryServiceTest(TestCase):

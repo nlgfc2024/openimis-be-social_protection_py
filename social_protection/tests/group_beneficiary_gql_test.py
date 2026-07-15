@@ -11,12 +11,12 @@ from social_protection.tests.test_helpers import (
     add_group_to_benefit_plan,
     create_individual,
     add_individual_to_group,
-    create_project,
 )
+from project_social_protection.tests.test_helpers import create_project
 from social_protection.services import GroupBeneficiaryService
-from social_protection.models import (
+from social_protection.models import GroupBeneficiary
+from project_social_protection.models import (
     GroupBeneficiaryProjectTimeEntry,
-    GroupBeneficiary,
     GroupBeneficiaryProjectEnrollment,
 )
 from social_protection.apps import SocialProtectionConfig

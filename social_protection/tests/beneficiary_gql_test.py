@@ -9,11 +9,11 @@ from social_protection.tests.test_helpers import (
     create_benefit_plan,
     create_individual,
     add_individual_to_benefit_plan,
-    create_project,
 )
-from social_protection.models import (
-    BeneficiaryProjectTimeEntry, Beneficiary, BeneficiaryProjectEnrollment,
-    BeneficiaryStatus,
+from project_social_protection.tests.test_helpers import create_project
+from social_protection.models import Beneficiary, BeneficiaryStatus
+from project_social_protection.models import (
+    BeneficiaryProjectTimeEntry, BeneficiaryProjectEnrollment,
 )
 from social_protection.services import BeneficiaryService
 from social_protection.apps import SocialProtectionConfig

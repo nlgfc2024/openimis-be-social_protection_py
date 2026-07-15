@@ -8,14 +8,14 @@ import uuid
 
 from django.test import TestCase
 
-from social_protection.models import BeneficiaryProjectEnrollment
+from project_social_protection.models import BeneficiaryProjectEnrollment
 from social_protection.services import BeneficiaryService
 from core.test_helpers import LogInHelper
 from social_protection.tests.test_helpers import (
     create_benefit_plan,
     create_individual,
-    create_project,
 )
+from project_social_protection.tests.test_helpers import create_project
 
 
 class BulkSaveTestCase(TestCase):

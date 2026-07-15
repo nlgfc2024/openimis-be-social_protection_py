@@ -6,7 +6,7 @@ import copy
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
 from core.models.base_mutation import MutationLog
 from individual.models import Individual, Group, GroupIndividual
-from social_protection.models import BenefitPlan, Activity, Project
+from social_protection.models import BenefitPlan
 from social_protection.tests.data import (
     service_add_payload_valid_schema,
     service_beneficiary_add_payload,
@@ -110,34 +110,8 @@ def add_group_to_benefit_plan(service, group, benefit_plan, payload_override={})
     return uuid
 
 
-def find_or_create_activity(name, username):
-    activity_found = Activity.objects.filter(name=name)
-    if activity_found:
-        activity = activity_found.first()
-    else:
-        activity = Activity(name=name)
-        activity.save(username=username)
-    return activity
-
-
-def create_project(name, benefit_plan, username, allows_multiple_enrollments=False, status=None):
-    activity = find_or_create_activity("Community Outreach", username)
-    location = create_test_village()
-
-    project = Project(
-        name=name,
-        benefit_plan=benefit_plan,
-        activity=activity,
-        location=location,
-        target_beneficiaries=100,
-        working_days=90,
-        allows_multiple_enrollments=allows_multiple_enrollments,
-    )
-    if status is not None:
-        project.status = status
-
-    project.save(username=username)
-    return project
+# Project / Activity test factories moved to project_social_protection.tests.test_helpers
+# together with the project domain.
 
 
 class PatchedOpenIMISGraphQLTestCase(openIMISGraphQLTestCase):
