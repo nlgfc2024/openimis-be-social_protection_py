@@ -1,9 +1,16 @@
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from social_protection.models import BenefitPlan, BenefitPlanDataUploadRecords
 from individual.models import IndividualDataSource, IndividualDataSourceUpload
-from social_protection.services import BeneficiaryImportService
+from social_protection.services import BeneficiaryImportService, BeneficiaryService
 from core.test_helpers import LogInHelper
 from social_protection.tests.data import service_add_payload
+from social_protection.tests.test_helpers import (
+    create_benefit_plan,
+    create_individual,
+    add_individual_to_benefit_plan,
+)
 from individual.models import Individual
 from individual.tests.data import service_add_individual_payload
 import pandas as pd
@@ -123,3 +130,147 @@ class BeneficiaryImportServiceTest(TestCase):
         )
         record_upload.save(username=cls.user.username)
         return record_upload
+
+
+UNIQUENESS_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "properties": {
+        "national_id": {
+            "type": "string",
+            "uniqueness": True,
+        },
+    },
+}
+
+
+class BeneficiaryImportDeduplicationTest(TestCase):
+    """
+    Covers the restored DB-level uniqueness check in
+    BeneficiaryImportService._validate_possible_beneficiaries /
+    process_chunk: duplicates against existing beneficiaries, duplicates
+    within the same uploaded batch, and that the query count doesn't scale
+    with the number of rows validated.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.user = LogInHelper().get_or_create_user_api()
+        cls.service = BeneficiaryImportService(cls.user)
+        cls.benefit_plan = create_benefit_plan(
+            cls.user.username,
+            payload_override={
+                'code': 'DEDUP1',
+                'type': 'INDIVIDUAL',
+                'beneficiary_data_schema': UNIQUENESS_SCHEMA,
+            },
+        )
+
+        existing_individual = create_individual(
+            cls.user.username, {'first_name': 'Existing'}
+        )
+        add_individual_to_benefit_plan(
+            BeneficiaryService(cls.user),
+            existing_individual,
+            cls.benefit_plan,
+            {
+                'status': 'ACTIVE',
+                'json_ext': {
+                    'national_id': 'DUPDB',
+                    'educated_level': 'higher education',
+                },
+            },
+        )
+
+    def _create_upload(self):
+        upload = IndividualDataSourceUpload(
+            source_name='dedup test upload', source_type='beneficiary import'
+        )
+        upload.save(username=self.user.username)
+        return upload
+
+    def _sources_dataframe(self, upload, national_ids):
+        sources = []
+        for national_id in national_ids:
+            source = IndividualDataSource(
+                upload=upload,
+                json_ext={'national_id': national_id},
+                validations={},
+            )
+            source.save(username=self.user.username)
+            sources.append(source)
+        return self.service._load_dataframe(sources)
+
+    def test_duplicate_only_in_database_is_flagged(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(upload, ['DUPDB'])
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        validation = validated[0]['validations']['national_id_uniqueness']
+        self.assertFalse(validation['success'])
+        db_matches = validation['duplications']['duplicates_amoung_database']
+        self.assertEqual(len(db_matches), 1)
+        # The extra json_ext field on the existing beneficiary is
+        # unpacked into the duplicate report.
+        self.assertEqual(db_matches[0]['educated_level'], 'higher education')
+        self.assertEqual(
+            validation['duplications']['incoming_duplicates'], []
+        )
+
+    def test_duplicate_only_within_batch_is_flagged(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(
+            upload, ['BATCHDUP', 'BATCHDUP']
+        )
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        for entry in validated:
+            validation = entry['validations']['national_id_uniqueness']
+            self.assertFalse(validation['success'])
+            self.assertEqual(
+                validation['duplications']['duplicates_amoung_database'], []
+            )
+            self.assertEqual(
+                len(validation['duplications']['incoming_duplicates']), 1
+            )
+
+    def test_no_duplicate_succeeds(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(upload, ['UNIQUE1'])
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        validation = validated[0]['validations']['national_id_uniqueness']
+        self.assertTrue(validation['success'])
+        self.assertIsNone(validation['duplications'])
+
+    def test_query_count_does_not_scale_with_row_count(self):
+        small_upload = self._create_upload()
+        small_dataframe = self._sources_dataframe(
+            small_upload, ['SMALL1', 'SMALL2']
+        )
+        large_upload = self._create_upload()
+        large_dataframe = self._sources_dataframe(
+            large_upload, [f'LARGE{i}' for i in range(20)]
+        )
+
+        with CaptureQueriesContext(connection) as small_ctx:
+            self.service._validate_possible_beneficiaries(
+                small_dataframe, self.benefit_plan, small_upload.id
+            )
+        with CaptureQueriesContext(connection) as large_ctx:
+            self.service._validate_possible_beneficiaries(
+                large_dataframe, self.benefit_plan, large_upload.id
+            )
+
+        self.assertEqual(
+            len(small_ctx.captured_queries), len(large_ctx.captured_queries)
+        )
