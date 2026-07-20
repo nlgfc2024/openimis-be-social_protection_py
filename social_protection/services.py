@@ -157,10 +157,10 @@ class BeneficiaryService(BaseService, CheckerLogicServiceMixin):
         try:
             status = obj_data.get("status", None)
             benefit_plan_id = obj_data.get("benefit_plan_id", None)
-            id = obj_data.get('id', None)
+            _id = obj_data.get('id', None)
 
             if self.would_exceed_max_active_beneficiaries(
-                benefit_plan_id, status, id
+                benefit_plan_id, status, _id
             ):
                 raise ValueError(
                     "Error changing beneficiary to active status. "
@@ -249,10 +249,10 @@ class GroupBeneficiaryService(BaseService, CheckerLogicServiceMixin):
         try:
             status = obj_data.get("status", None)
             benefit_plan_id = obj_data.get("benefit_plan_id", None)
-            id = obj_data.get('id', None)
+            _id = obj_data.get('id', None)
 
             if self.would_exceed_max_active_beneficiaries(
-                benefit_plan_id, status, id
+                benefit_plan_id, status, _id
             ):
                 raise ValueError(
                     "Error changing beneficiary to active status. "
@@ -426,6 +426,10 @@ class BeneficiaryImportService:
                 for field in unique_fields
             }
 
+        db_duplicates_index = self._build_db_duplicate_index(
+            benefit_plan, unique_fields
+        )
+
         # TODO: Use ProcessPoolExecutor after resolving django
         # dependency loading issue
         validated_dataframe = BeneficiaryImportService.process_chunk(
@@ -434,6 +438,7 @@ class BeneficiaryImportService:
             unique_validations,
             calculation,
             calculation_uuid,
+            db_duplicates_index,
         )
 
         self.save_validation_error_in_data_source_bulk(validated_dataframe)
@@ -441,9 +446,72 @@ class BeneficiaryImportService:
         return validated_dataframe, invalid_items
 
     @staticmethod
-    def process_chunk(
-        chunk, properties, unique_validations, calculation, calculation_uuid
+    def _build_db_duplicate_index(benefit_plan, unique_fields):
+        if not unique_fields:
+            return {}
+
+        index = {field: {} for field in unique_fields}
+        existing_beneficiaries = Beneficiary.objects.filter(
+            benefit_plan=benefit_plan, is_deleted=False
+        ).select_related('individual')
+
+        for beneficiary in existing_beneficiaries:
+            json_ext = beneficiary.json_ext or {}
+            beneficiary_dict = {
+                'id': beneficiary.id,
+                'first_name': beneficiary.individual.first_name,
+                'last_name': beneficiary.individual.last_name,
+                'dob': beneficiary.individual.dob,
+                **json_ext,
+            }
+            for field in unique_fields:
+                if field not in json_ext:
+                    continue
+                index[field].setdefault(
+                    json_ext[field], []
+                ).append(beneficiary_dict)
+
+        return index
+    
+    @staticmethod
+    def _check_uniqueness(
+        chunk, row_idx, row, field, unique_validations, db_duplicates_index
     ):
+        value = row[field]
+        in_batch_duplicate = bool(unique_validations[field].loc[row_idx])
+        db_matches = db_duplicates_index.get(field, {}).get(value, [])
+
+        incoming_matches = []
+        if in_batch_duplicate:
+            same_value = chunk[chunk[field] == value]
+            incoming_matches = same_value[
+                same_value.index != row_idx
+            ].to_dict('records')
+
+        if db_matches or incoming_matches:
+            return {
+                'success': False,
+                'field_name': field,
+                'note': f"'{field}' Field value '{value}' is duplicated",
+                'duplications': {
+                    'duplicated': True,
+                    'duplicates_amoung_database': db_matches,
+                    'incoming_duplicates': incoming_matches,
+                },
+            }
+        return {
+            'success': True,
+            'field_name': field,
+            'note': f"'{field}' Field value '{value}' is not duplicated",
+            'duplications': None,
+        }
+
+    @staticmethod
+    def process_chunk(
+        chunk, properties, unique_validations, calculation, calculation_uuid,
+        db_duplicates_index=None,
+    ):
+        db_duplicates_index = db_duplicates_index or {}
         validated_dataframe = []
         for row_idx, row in chunk.iterrows():
             field_validation = {'row': row.to_dict(), 'validations': {}}
@@ -466,31 +534,16 @@ class BeneficiaryImportService:
                     )
 
                 if "uniqueness" in field_properties and field in row:
-                    field_validation['validations'][f'{field}_uniqueness'] = {
-                        'success': not unique_validations[field].loc[row.name]
-                    }
+                    field_validation['validations'][f'{field}_uniqueness'] = (
+                        BeneficiaryImportService._check_uniqueness(
+                            chunk, row_idx, row, field,
+                            unique_validations, db_duplicates_index,
+                        )
+                    )
 
             validated_dataframe.append(field_validation)
 
         return validated_dataframe
-
-    def _handle_uniqueness(
-        self, row, field, field_properties, benefit_plan, dataframe
-    ):
-        unique_class_validation = (
-            SocialProtectionConfig.unique_class_validation
-        )
-        calculation_uuid = SocialProtectionConfig.validation_calculation_uuid
-        calculation = get_calculation_object(calculation_uuid)
-        result_row = calculation.calculate_if_active_for_object(
-            unique_class_validation,
-            calculation_uuid,
-            field_name=field,
-            field_value=row[field],
-            benefit_plan=benefit_plan.id,
-            incoming_data=dataframe
-        )
-        return result_row
 
     def _handle_validation_calculation(self, row, field, field_properties):
         validation_calculation = field_properties.get(
