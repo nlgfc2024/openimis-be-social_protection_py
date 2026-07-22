@@ -220,6 +220,20 @@ class BeneficiaryImportDeduplicationTest(TestCase):
             validation['duplications']['incoming_duplicates'], []
         )
 
+    def test_duplications_detail_does_not_reach_persisted_validation_errors(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(upload, ['DUPDB'])
+        source_id = dataframe['id'].iloc[0]
+
+        self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        source = IndividualDataSource.objects.get(id=source_id)
+        error_fields = source.validations['validation_errors']
+        self.assertEqual(len(error_fields), 1)
+        self.assertEqual(set(error_fields[0].keys()), {'field_name', 'note'})
+
     def test_duplicate_with_mismatched_types_is_flagged(self):
         # json_ext stores an int; the incoming row parses the same value as a string.
         mismatched_individual = create_individual(
