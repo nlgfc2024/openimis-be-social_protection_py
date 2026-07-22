@@ -446,6 +446,32 @@ class BeneficiaryImportService:
         invalid_items = fetch_summary_of_broken_items(upload_id)
         return validated_dataframe, invalid_items
 
+    # Unique fields that live on Individual rather than in Beneficiary.json_ext.
+    CORE_INDIVIDUAL_FIELDS = {'first_name', 'last_name', 'dob'}
+
+    @staticmethod
+    def _normalize_unique_value(value):
+        if hasattr(value, 'strftime'):
+            return value.strftime('%Y-%m-%d')
+        return str(value).strip()
+
+    @staticmethod
+    def _json_ext_filter_values(value):
+        # Covers both str/int representations so the DB `__in` filter matches
+        # regardless of which side (json_ext vs incoming row) has which type.
+        text = str(value).strip()
+        candidates = {text}
+        try:
+            candidates.add(int(text))
+            return candidates
+        except (TypeError, ValueError):
+            pass
+        try:
+            candidates.add(float(text))
+        except (TypeError, ValueError):
+            pass
+        return candidates
+
     @staticmethod
     def _build_db_duplicate_index(benefit_plan, unique_fields, dataframe):
         if not unique_fields:
@@ -457,11 +483,24 @@ class BeneficiaryImportService:
         for field in unique_fields:
             if field not in dataframe.columns:
                 continue
-            incoming_values = [
-                str(v).strip() for v in dataframe[field].dropna().unique()
-            ]
-            if incoming_values:
-                field_filter |= Q(**{f'json_ext__{field}__in': incoming_values})
+            incoming = dataframe[field].dropna().unique()
+            if not len(incoming):
+                continue
+            if field in BeneficiaryImportService.CORE_INDIVIDUAL_FIELDS:
+                lookup = f'individual__{field}__in'
+                values = [
+                    BeneficiaryImportService._normalize_unique_value(v)
+                    for v in incoming
+                ]
+            else:
+                lookup = f'json_ext__{field}__in'
+                values = set()
+                for v in incoming:
+                    values.update(
+                        BeneficiaryImportService._json_ext_filter_values(v)
+                    )
+                values = list(values)
+            field_filter |= Q(**{lookup: values})
 
         if not field_filter:
             return index
@@ -480,9 +519,11 @@ class BeneficiaryImportService:
                 **json_ext,
             }
             for field in unique_fields:
-                if field not in json_ext:
+                if field not in beneficiary_dict:
                     continue
-                key = str(json_ext[field]).strip()
+                key = BeneficiaryImportService._normalize_unique_value(
+                    beneficiary_dict[field]
+                )
                 index[field].setdefault(key, []).append(beneficiary_dict)
 
         return index
@@ -492,7 +533,7 @@ class BeneficiaryImportService:
         chunk, row_idx, row, field, unique_validations, db_duplicates_index
     ):
         value = row[field]
-        lookup_value = str(value).strip()
+        lookup_value = BeneficiaryImportService._normalize_unique_value(value)
         in_batch_duplicate = bool(unique_validations[field].loc[row_idx])
         db_matches = db_duplicates_index.get(field, {}).get(lookup_value, [])
 
