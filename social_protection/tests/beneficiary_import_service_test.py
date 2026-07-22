@@ -221,9 +221,7 @@ class BeneficiaryImportDeduplicationTest(TestCase):
         )
 
     def test_duplicate_with_mismatched_types_is_flagged(self):
-        # Existing beneficiary stored with an int-typed json_ext value; the
-        # incoming row parses the same value as a string via pandas. Both
-        # sides must be normalised or this duplicate passes silently.
+        # json_ext stores an int; the incoming row parses the same value as a string.
         mismatched_individual = create_individual(
             self.user.username, {'first_name': 'Mismatched'}
         )
@@ -303,3 +301,114 @@ class BeneficiaryImportDeduplicationTest(TestCase):
         self.assertEqual(
             len(small_ctx.captured_queries), len(large_ctx.captured_queries)
         )
+
+
+CORE_FIELD_UNIQUENESS_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "properties": {
+        "first_name": {
+            "type": "string",
+            "uniqueness": True,
+        },
+        "dob": {
+            "type": "string",
+            "uniqueness": True,
+        },
+    },
+}
+
+
+class BeneficiaryImportCoreFieldUniquenessTest(TestCase):
+    """Uniqueness on first_name/last_name/dob, which live on Individual, not json_ext."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.user = LogInHelper().get_or_create_user_api()
+        cls.service = BeneficiaryImportService(cls.user)
+        cls.benefit_plan = create_benefit_plan(
+            cls.user.username,
+            payload_override={
+                'code': 'DEDUP2',
+                'type': 'INDIVIDUAL',
+                'beneficiary_data_schema': CORE_FIELD_UNIQUENESS_SCHEMA,
+            },
+        )
+
+        existing_individual = create_individual(
+            cls.user.username,
+            {'first_name': 'DupFirst', 'dob': '1990-01-01'},
+        )
+        add_individual_to_benefit_plan(
+            BeneficiaryService(cls.user),
+            existing_individual,
+            cls.benefit_plan,
+            {'status': 'ACTIVE', 'json_ext': {}},
+        )
+
+    def _create_upload(self):
+        upload = IndividualDataSourceUpload(
+            source_name='core field dedup test upload',
+            source_type='beneficiary import',
+        )
+        upload.save(username=self.user.username)
+        return upload
+
+    def _sources_dataframe(self, upload, rows):
+        sources = []
+        for row in rows:
+            source = IndividualDataSource(
+                upload=upload, json_ext=row, validations={}
+            )
+            source.save(username=self.user.username)
+            sources.append(source)
+        return self.service._load_dataframe(sources)
+
+    def test_duplicate_on_first_name_against_database_is_flagged(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(
+            upload, [{'first_name': 'DupFirst', 'dob': '2000-05-05'}]
+        )
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        validation = validated[0]['validations']['first_name_uniqueness']
+        self.assertFalse(validation['success'])
+        self.assertEqual(
+            len(validation['duplications']['duplicates_amoung_database']), 1
+        )
+
+    def test_duplicate_on_dob_against_database_is_flagged(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(
+            upload, [{'first_name': 'SomeoneElse', 'dob': '1990-01-01'}]
+        )
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        validation = validated[0]['validations']['dob_uniqueness']
+        self.assertFalse(validation['success'])
+        self.assertEqual(
+            len(validation['duplications']['duplicates_amoung_database']), 1
+        )
+
+    def test_no_duplicate_on_core_fields_succeeds(self):
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(
+            upload, [{'first_name': 'Unrelated', 'dob': '1985-03-03'}]
+        )
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        first_name_validation = (
+            validated[0]['validations']['first_name_uniqueness']
+        )
+        dob_validation = validated[0]['validations']['dob_uniqueness']
+        self.assertTrue(first_name_validation['success'])
+        self.assertTrue(dob_validation['success'])
