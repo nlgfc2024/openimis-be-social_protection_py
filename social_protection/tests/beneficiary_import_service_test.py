@@ -220,6 +220,35 @@ class BeneficiaryImportDeduplicationTest(TestCase):
             validation['duplications']['incoming_duplicates'], []
         )
 
+    def test_duplicate_with_mismatched_types_is_flagged(self):
+        # Existing beneficiary stored with an int-typed json_ext value; the
+        # incoming row parses the same value as a string via pandas. Both
+        # sides must be normalised or this duplicate passes silently.
+        mismatched_individual = create_individual(
+            self.user.username, {'first_name': 'Mismatched'}
+        )
+        add_individual_to_benefit_plan(
+            BeneficiaryService(self.user),
+            mismatched_individual,
+            self.benefit_plan,
+            {
+                'status': 'ACTIVE',
+                'json_ext': {'national_id': 12345},
+            },
+        )
+
+        upload = self._create_upload()
+        dataframe = self._sources_dataframe(upload, ['12345'])
+
+        validated, _ = self.service._validate_possible_beneficiaries(
+            dataframe, self.benefit_plan, upload.id
+        )
+
+        validation = validated[0]['validations']['national_id_uniqueness']
+        self.assertFalse(validation['success'])
+        db_matches = validation['duplications']['duplicates_amoung_database']
+        self.assertEqual(len(db_matches), 1)
+
     def test_duplicate_only_within_batch_is_flagged(self):
         upload = self._create_upload()
         dataframe = self._sources_dataframe(

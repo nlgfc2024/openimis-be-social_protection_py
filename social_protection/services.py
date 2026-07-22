@@ -6,6 +6,7 @@ import pandas as pd
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
+from django.db.models import Q
 from django.utils.translation import gettext as _
 from pandas import DataFrame
 
@@ -427,7 +428,7 @@ class BeneficiaryImportService:
             }
 
         db_duplicates_index = self._build_db_duplicate_index(
-            benefit_plan, unique_fields
+            benefit_plan, unique_fields, dataframe
         )
 
         # TODO: Use ProcessPoolExecutor after resolving django
@@ -446,13 +447,27 @@ class BeneficiaryImportService:
         return validated_dataframe, invalid_items
 
     @staticmethod
-    def _build_db_duplicate_index(benefit_plan, unique_fields):
+    def _build_db_duplicate_index(benefit_plan, unique_fields, dataframe):
         if not unique_fields:
             return {}
 
         index = {field: {} for field in unique_fields}
+
+        field_filter = Q()
+        for field in unique_fields:
+            if field not in dataframe.columns:
+                continue
+            incoming_values = [
+                str(v).strip() for v in dataframe[field].dropna().unique()
+            ]
+            if incoming_values:
+                field_filter |= Q(**{f'json_ext__{field}__in': incoming_values})
+
+        if not field_filter:
+            return index
+
         existing_beneficiaries = Beneficiary.objects.filter(
-            benefit_plan=benefit_plan, is_deleted=False
+            field_filter, benefit_plan=benefit_plan, is_deleted=False
         ).select_related('individual')
 
         for beneficiary in existing_beneficiaries:
@@ -467,19 +482,19 @@ class BeneficiaryImportService:
             for field in unique_fields:
                 if field not in json_ext:
                     continue
-                index[field].setdefault(
-                    json_ext[field], []
-                ).append(beneficiary_dict)
+                key = str(json_ext[field]).strip()
+                index[field].setdefault(key, []).append(beneficiary_dict)
 
         return index
-    
+
     @staticmethod
     def _check_uniqueness(
         chunk, row_idx, row, field, unique_validations, db_duplicates_index
     ):
         value = row[field]
+        lookup_value = str(value).strip()
         in_batch_duplicate = bool(unique_validations[field].loc[row_idx])
-        db_matches = db_duplicates_index.get(field, {}).get(value, [])
+        db_matches = db_duplicates_index.get(field, {}).get(lookup_value, [])
 
         incoming_matches = []
         if in_batch_duplicate:
