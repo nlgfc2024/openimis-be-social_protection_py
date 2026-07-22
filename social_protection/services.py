@@ -6,6 +6,7 @@ import pandas as pd
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
+from django.db.models import Q
 from django.utils.translation import gettext as _
 from pandas import DataFrame
 
@@ -157,10 +158,10 @@ class BeneficiaryService(BaseService, CheckerLogicServiceMixin):
         try:
             status = obj_data.get("status", None)
             benefit_plan_id = obj_data.get("benefit_plan_id", None)
-            id = obj_data.get('id', None)
+            _id = obj_data.get('id', None)
 
             if self.would_exceed_max_active_beneficiaries(
-                benefit_plan_id, status, id
+                benefit_plan_id, status, _id
             ):
                 raise ValueError(
                     "Error changing beneficiary to active status. "
@@ -249,10 +250,10 @@ class GroupBeneficiaryService(BaseService, CheckerLogicServiceMixin):
         try:
             status = obj_data.get("status", None)
             benefit_plan_id = obj_data.get("benefit_plan_id", None)
-            id = obj_data.get('id', None)
+            _id = obj_data.get('id', None)
 
             if self.would_exceed_max_active_beneficiaries(
-                benefit_plan_id, status, id
+                benefit_plan_id, status, _id
             ):
                 raise ValueError(
                     "Error changing beneficiary to active status. "
@@ -426,6 +427,10 @@ class BeneficiaryImportService:
                 for field in unique_fields
             }
 
+        db_duplicates_index = self._build_db_duplicate_index(
+            benefit_plan, unique_fields, dataframe
+        )
+
         # TODO: Use ProcessPoolExecutor after resolving django
         # dependency loading issue
         validated_dataframe = BeneficiaryImportService.process_chunk(
@@ -434,16 +439,135 @@ class BeneficiaryImportService:
             unique_validations,
             calculation,
             calculation_uuid,
+            db_duplicates_index,
         )
 
         self.save_validation_error_in_data_source_bulk(validated_dataframe)
         invalid_items = fetch_summary_of_broken_items(upload_id)
         return validated_dataframe, invalid_items
 
+    # Unique fields that live on Individual rather than in Beneficiary.json_ext.
+    CORE_INDIVIDUAL_FIELDS = {'first_name', 'last_name', 'dob'}
+
+    @staticmethod
+    def _normalize_unique_value(value):
+        if hasattr(value, 'strftime'):
+            return value.strftime('%Y-%m-%d')
+        return str(value).strip()
+
+    @staticmethod
+    def _json_ext_filter_values(value):
+        # Covers both str/int representations so the DB `__in` filter matches
+        # regardless of which side (json_ext vs incoming row) has which type.
+        text = str(value).strip()
+        candidates = {text}
+        try:
+            candidates.add(int(text))
+            return candidates
+        except (TypeError, ValueError):
+            pass
+        try:
+            candidates.add(float(text))
+        except (TypeError, ValueError):
+            pass
+        return candidates
+
+    @staticmethod
+    def _build_db_duplicate_index(benefit_plan, unique_fields, dataframe):
+        if not unique_fields:
+            return {}
+
+        index = {field: {} for field in unique_fields}
+
+        field_filter = Q()
+        for field in unique_fields:
+            if field not in dataframe.columns:
+                continue
+            incoming = dataframe[field].dropna().unique()
+            if not len(incoming):
+                continue
+            if field in BeneficiaryImportService.CORE_INDIVIDUAL_FIELDS:
+                lookup = f'individual__{field}__in'
+                values = [
+                    BeneficiaryImportService._normalize_unique_value(v)
+                    for v in incoming
+                ]
+            else:
+                lookup = f'json_ext__{field}__in'
+                values = set()
+                for v in incoming:
+                    values.update(
+                        BeneficiaryImportService._json_ext_filter_values(v)
+                    )
+                values = list(values)
+            field_filter |= Q(**{lookup: values})
+
+        if not field_filter:
+            return index
+
+        existing_beneficiaries = Beneficiary.objects.filter(
+            field_filter, benefit_plan=benefit_plan, is_deleted=False
+        ).select_related('individual')
+
+        for beneficiary in existing_beneficiaries:
+            json_ext = beneficiary.json_ext or {}
+            beneficiary_dict = {
+                'id': beneficiary.id,
+                'first_name': beneficiary.individual.first_name,
+                'last_name': beneficiary.individual.last_name,
+                'dob': beneficiary.individual.dob,
+                **json_ext,
+            }
+            for field in unique_fields:
+                if field not in beneficiary_dict:
+                    continue
+                key = BeneficiaryImportService._normalize_unique_value(
+                    beneficiary_dict[field]
+                )
+                index[field].setdefault(key, []).append(beneficiary_dict)
+
+        return index
+
+    @staticmethod
+    def _check_uniqueness(
+        chunk, row_idx, row, field, unique_validations, db_duplicates_index
+    ):
+        value = row[field]
+        lookup_value = BeneficiaryImportService._normalize_unique_value(value)
+        in_batch_duplicate = bool(unique_validations[field].loc[row_idx])
+        db_matches = db_duplicates_index.get(field, {}).get(lookup_value, [])
+
+        incoming_matches = []
+        if in_batch_duplicate:
+            same_value = chunk[chunk[field] == value]
+            incoming_matches = same_value[
+                same_value.index != row_idx
+            ].to_dict('records')
+
+        if db_matches or incoming_matches:
+            return {
+                'success': False,
+                'field_name': field,
+                'note': f"'{field}' Field value '{value}' is duplicated",
+                'duplications': {
+                    'duplicated': True,
+                    'duplicates_amoung_database': db_matches,
+                    'incoming_duplicates': incoming_matches,
+                },
+            }
+        return {
+            'success': True,
+            'field_name': field,
+            'note': f"'{field}' Field value '{value}' is not duplicated",
+            'duplications': None,
+        }
+
     @staticmethod
     def process_chunk(
-        chunk, properties, unique_validations, calculation, calculation_uuid
+        chunk, properties, unique_validations, calculation, calculation_uuid,
+        db_duplicates_index=None,
     ):
+        db_duplicates_index = db_duplicates_index or {}
         validated_dataframe = []
         for row_idx, row in chunk.iterrows():
             field_validation = {'row': row.to_dict(), 'validations': {}}
@@ -466,31 +590,16 @@ class BeneficiaryImportService:
                     )
 
                 if "uniqueness" in field_properties and field in row:
-                    field_validation['validations'][f'{field}_uniqueness'] = {
-                        'success': not unique_validations[field].loc[row.name]
-                    }
+                    field_validation['validations'][f'{field}_uniqueness'] = (
+                        BeneficiaryImportService._check_uniqueness(
+                            chunk, row_idx, row, field,
+                            unique_validations, db_duplicates_index,
+                        )
+                    )
 
             validated_dataframe.append(field_validation)
 
         return validated_dataframe
-
-    def _handle_uniqueness(
-        self, row, field, field_properties, benefit_plan, dataframe
-    ):
-        unique_class_validation = (
-            SocialProtectionConfig.unique_class_validation
-        )
-        calculation_uuid = SocialProtectionConfig.validation_calculation_uuid
-        calculation = get_calculation_object(calculation_uuid)
-        result_row = calculation.calculate_if_active_for_object(
-            unique_class_validation,
-            calculation_uuid,
-            field_name=field,
-            field_value=row[field],
-            benefit_plan=benefit_plan.id,
-            incoming_data=dataframe
-        )
-        return result_row
 
     def _handle_validation_calculation(self, row, field, field_properties):
         validation_calculation = field_properties.get(
