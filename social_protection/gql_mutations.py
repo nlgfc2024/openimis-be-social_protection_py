@@ -61,6 +61,20 @@ def check_criteria_perms(user, permission, data, current=None):
         raise ValidationError("mutation.lack_of_criteria_perms")
 
 
+def preserve_hidden_json_ext(user, data, current):
+    """Merge criteria-only updates without erasing undisclosed extension data."""
+    submitted = _json_object(data.get("json_ext"))
+    if submitted is None or "advanced_criteria" not in submitted or not current:
+        return
+    if user.has_perms(SocialProtectionConfig.gql_schema_update_perms):
+        return
+    current_json_ext = _json_object(current.json_ext) or {}
+    data["json_ext"] = {
+        **current_json_ext,
+        "advanced_criteria": submitted["advanced_criteria"],
+    }
+
+
 class CreateBenefitPlanInputType(OpenIMISMutation.Input):
     class BenefitPlanTypeEnum(graphene.Enum):
         INDIVIDUAL = BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE
@@ -202,6 +216,9 @@ class UpdateBenefitPlanMutation(
             data.pop('client_mutation_id')
         if "client_mutation_label" in data:
             data.pop('client_mutation_label')
+
+        current = BenefitPlan.objects.filter(id=data.get("id")).first()
+        preserve_hidden_json_ext(user, data, current)
 
         service = BenefitPlanService(user)
         if SocialProtectionConfig.gql_check_benefit_plan_update:

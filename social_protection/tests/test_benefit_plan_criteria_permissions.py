@@ -7,11 +7,26 @@ from django.test import SimpleTestCase
 from social_protection.gql_mutations import (
     check_criteria_perms,
     check_perms_for_field,
+    preserve_hidden_json_ext,
 )
 from social_protection.gql_queries import BenefitPlanGQLType
 
 
 class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
+    def test_criteria_only_update_preserves_hidden_json_ext(self):
+        user = Mock()
+        user.has_perms.return_value = False
+        data = {"json_ext": {"advanced_criteria": {"ACTIVE": []}}}
+        current = SimpleNamespace(json_ext={
+            "advanced_criteria": {"POTENTIAL": []},
+            "private_value": "preserved",
+        })
+
+        preserve_hidden_json_ext(user, data, current)
+
+        self.assertEqual(data["json_ext"]["private_value"], "preserved")
+        self.assertEqual(data["json_ext"]["advanced_criteria"], {"ACTIVE": []})
+
     def test_empty_schema_still_requires_permission(self):
         user = Mock()
         user.has_perms.return_value = False
