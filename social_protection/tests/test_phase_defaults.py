@@ -1,8 +1,10 @@
 import copy
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase
 
+from core.services import BaseService
 from core.test_helpers import LogInHelper
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import BenefitPlan
@@ -126,21 +128,32 @@ class BenefitPlanCreationDefaultsTest(TestCase):
 
         payload = copy.deepcopy(service_add_payload_no_ext)
         payload.pop("max_beneficiaries")
-        result = self.service.create(payload)
+        payload["beneficiary_data_schema"] = {
+            "type": "object",
+            "properties": {"district": {"type": "string"}},
+        }
+        # Keep this unit test focused on the payload handed from the module's
+        # service to the shared persistence service. The assembled backend's
+        # persistence path also invokes infrastructure-backed cache hooks.
+        with patch.object(
+            BaseService,
+            "create",
+            return_value={"success": True},
+        ) as base_create:
+            result = self.service.create(payload)
 
         self.assertTrue(result["success"], result.get("detail"))
-        benefit_plan = BenefitPlan.objects.get(id=result["data"]["uuid"])
-        self.assertEqual(benefit_plan.max_beneficiaries, 25)
-        self.assertEqual(benefit_plan.description, "Default description")
+        persisted_payload = base_create.call_args.args[0]
+        self.assertEqual(persisted_payload["max_beneficiaries"], 25)
+        self.assertEqual(persisted_payload["description"], "Default description")
         self.assertEqual(
-            benefit_plan.json_ext["advanced_criteria"], configured_criteria
+            persisted_payload["json_ext"]["advanced_criteria"], configured_criteria
         )
 
         SocialProtectionConfig.benefit_plan_creation_defaults["common"][
             "json_ext"
         ]["advanced_criteria"]["POTENTIAL"][0]["value"] = "Blantyre"
-        benefit_plan.refresh_from_db()
         self.assertEqual(
-            benefit_plan.json_ext["advanced_criteria"]["POTENTIAL"][0]["value"],
+            persisted_payload["json_ext"]["advanced_criteria"]["POTENTIAL"][0]["value"],
             "Lilongwe",
         )
