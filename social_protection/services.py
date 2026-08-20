@@ -25,6 +25,7 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     GroupBeneficiary,
 )
+from social_protection.phase_defaults import apply_benefit_plan_creation_defaults
 
 from social_protection.utils import (
     load_dataframe,
@@ -56,7 +57,11 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
 
     @register_service_signal('benefit_plan_service.create')
     def create(self, obj_data):
-        return super().create(obj_data)
+        data_with_defaults = apply_benefit_plan_creation_defaults(
+            SocialProtectionConfig.benefit_plan_creation_defaults,
+            obj_data,
+        )
+        return super().create(data_with_defaults)
 
     @register_service_signal('benefit_plan_service.update')
     def update(self, obj_data):
@@ -844,4 +849,3 @@ class BeneficiaryTaskCreatorService:
 class GroupBeneficiaryImportService(BeneficiaryImportService):
     pass
     # TODO: create workflow upload/update groups and use it here
-

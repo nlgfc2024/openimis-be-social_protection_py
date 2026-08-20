@@ -1,9 +1,12 @@
+import json
+
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext as _
 
 from core.utils import validate_json_schema
 from core.validation import BaseModelValidation, ObjectExistsValidationMixin
 from social_protection.models import Beneficiary, BenefitPlan
+from social_protection.phase_defaults import advanced_criteria_validation_errors
 
 
 class BenefitPlanValidation(BaseModelValidation, ObjectExistsValidationMixin):
@@ -49,9 +52,30 @@ def validate_benefit_plan(data, uuid=None):
         *validate_bf_unique_name(data.get('name'), uuid)
     ]
 
-    beneficiary_data_schema = data.get('beneficiary_data_schema')
+    existing = BenefitPlan.objects.filter(id=uuid).first() if uuid else None
+    beneficiary_data_schema = data.get(
+        'beneficiary_data_schema',
+        existing.beneficiary_data_schema if existing else None,
+    )
     if beneficiary_data_schema:
         validations.extend(validate_json_schema(beneficiary_data_schema))
+
+    json_ext = data.get('json_ext', existing.json_ext if existing else None)
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, json.JSONDecodeError):
+            validations.append({"message": "json_ext must be a JSON object."})
+            json_ext = None
+    if json_ext is not None and not isinstance(json_ext, dict):
+        validations.append({"message": "json_ext must be a JSON object."})
+    elif isinstance(json_ext, dict) and 'advanced_criteria' in json_ext:
+        criteria_errors = advanced_criteria_validation_errors(
+            json_ext['advanced_criteria'],
+            beneficiary_data_schema,
+            data.get('type', existing.type if existing else 'BenefitPlan'),
+        )
+        validations.extend({"message": error} for error in criteria_errors)
 
     return validations
 

@@ -57,6 +57,9 @@ It is dedicated to be deployed as a module of [openimis-be_py](https://github.co
 * gql_beneficiary_create_perms: required rights to call createBeneficiary and createGroupBeneficiary GraphQL Mutation (default: ["160002"])
 * gql_beneficiary_update_perms: required rights to call updateBeneficiary and updateGroupBeneficiary GraphQL Mutation (default: ["160003"])
 * gql_beneficiary_delete_perms: required rights to call deleteBeneficiary and deleteGroupBeneficiary GraphQL Mutation (default: ["170004"])
+* gql_benefit_plan_criteria_search_perms: required rights to read a Benefit Plan's sanitized `advancedCriteria` field (default: ["171005"])
+* gql_benefit_plan_criteria_update_perms: required rights to explicitly create, change, or clear `json_ext.advanced_criteria` (default: ["171006"])
+* benefit_plan_creation_defaults: validated defaults copied into each new Benefit Plan. Values from `common` are recursively merged with `INDIVIDUAL` or `GROUP` values and then with authorized request values. Supported fields are `beneficiary_data_schema`, `json_ext`, `max_beneficiaries`, `ceiling_per_beneficiary`, `institution`, and `description`. Configuration changes apply only to future Benefit Plans.
 
 * gql_check_benefit_plan_update: specifies whether Benefit Plan update should be updated using task based approval (default: True)
 * gql_check_beneficiary_crud: specifies whether Beneficiary CRUD should be use task based approval (default: True)
