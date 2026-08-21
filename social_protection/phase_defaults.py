@@ -93,6 +93,34 @@ def validate_benefit_plan_creation_defaults(defaults):
         raise ValidationError({"config": errors})
 
 
+def validate_mandatory_enrollment_criteria(criteria):
+    """Validate live system criteria without coupling them to a Phase schema."""
+    errors = []
+    if not isinstance(criteria, dict):
+        raise ValidationError({"config": [
+            "mandatory_enrollment_criteria must be an object."
+        ]})
+
+    unexpected_types = set(criteria) - {"INDIVIDUAL", "GROUP"}
+    if unexpected_types:
+        errors.append(
+            "Unsupported mandatory_enrollment_criteria types: "
+            + ", ".join(sorted(unexpected_types))
+        )
+
+    for benefit_plan_type in ("INDIVIDUAL", "GROUP"):
+        type_criteria = criteria.get(benefit_plan_type, {})
+        _validate_advanced_criteria(
+            f"mandatory_enrollment_criteria.{benefit_plan_type}",
+            type_criteria,
+            {},
+            errors,
+        )
+
+    if errors:
+        raise ValidationError({"config": errors})
+
+
 def advanced_criteria_validation_errors(
     criteria,
     schema=None,

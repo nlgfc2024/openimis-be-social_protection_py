@@ -6,7 +6,10 @@ from django.apps import AppConfig
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
 from core.module_config_registry import register_reloader, register_validator
-from social_protection.phase_defaults import validate_benefit_plan_creation_defaults
+from social_protection.phase_defaults import (
+    validate_benefit_plan_creation_defaults,
+    validate_mandatory_enrollment_criteria,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,10 @@ DEFAULT_CONFIG = {
             "beneficiary_data_schema": {},
             "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
         },
+        "INDIVIDUAL": {},
+        "GROUP": {},
+    },
+    "mandatory_enrollment_criteria": {
         "INDIVIDUAL": {},
         "GROUP": {},
     },
@@ -97,6 +104,7 @@ class SocialProtectionConfig(AppConfig):
     gql_benefit_plan_criteria_search_perms = None
     gql_benefit_plan_criteria_update_perms = None
     benefit_plan_creation_defaults = None
+    mandatory_enrollment_criteria = None
 
     gql_check_benefit_plan_update = None
     gql_check_beneficiary_crud = None
@@ -221,6 +229,9 @@ class SocialProtectionConfig(AppConfig):
     def __validate_config(cls, cfg):
         validate_benefit_plan_creation_defaults(
             cfg.get("benefit_plan_creation_defaults", {})
+        )
+        validate_mandatory_enrollment_criteria(
+            cfg.get("mandatory_enrollment_criteria", {})
         )
 
     def __register_masking_class(cls):

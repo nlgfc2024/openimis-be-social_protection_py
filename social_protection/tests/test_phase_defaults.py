@@ -12,12 +12,33 @@ from social_protection.phase_defaults import (
     apply_benefit_plan_creation_defaults,
     deep_merge,
     validate_benefit_plan_creation_defaults,
+    validate_mandatory_enrollment_criteria,
 )
 from social_protection.services import BenefitPlanService
 from social_protection.tests.data import service_add_payload_no_ext
 
 
 class PhaseDefaultsValidationTest(SimpleTestCase):
+    def test_accepts_type_and_status_specific_mandatory_criteria(self):
+        validate_mandatory_enrollment_criteria({
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "POTENTIAL": [{
+                    "field": "validation_status",
+                    "filter": "exact",
+                    "type": "string",
+                    "value": "VERIFIED",
+                }]
+            },
+        })
+
+    def test_rejects_invalid_mandatory_criteria(self):
+        with self.assertRaisesMessage(ValidationError, "unsupported status"):
+            validate_mandatory_enrollment_criteria({
+                "INDIVIDUAL": {},
+                "GROUP": {"UNKNOWN": []},
+            })
+
     def test_deep_merge_does_not_mutate_inputs(self):
         original = {"json_ext": {"advanced_criteria": {"POTENTIAL": []}}}
         override = {"json_ext": {"source": "request"}}
