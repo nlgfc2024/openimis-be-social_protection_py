@@ -1,4 +1,6 @@
 import copy
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 
@@ -178,6 +180,26 @@ def _validate_criterion(prefix, criterion, properties, errors):
         condition = criterion["custom_filter_condition"]
         if not isinstance(condition, str) or "=" not in condition:
             errors.append(f"{prefix}.custom_filter_condition is malformed.")
+            return
+        expression, value = condition.split("=", 1)
+        parts = expression.rsplit("__", 2)
+        if len(parts) == 3:
+            field, filter_name, value_type = parts
+        elif len(parts) == 2:
+            field, value_type = parts
+            filter_name = "exact"
+        else:
+            errors.append(f"{prefix}.custom_filter_condition is malformed.")
+            return
+        _validate_criterion_parts(
+            prefix,
+            field,
+            filter_name,
+            value_type,
+            value,
+            properties,
+            errors,
+        )
         return
 
     missing = CRITERION_FIELDS - set(criterion)
@@ -192,6 +214,26 @@ def _validate_criterion(prefix, criterion, properties, errors):
         errors.append(f"{prefix} field, filter and type must be strings.")
         return
 
+    _validate_criterion_parts(
+        prefix,
+        field,
+        filter_name,
+        value_type,
+        criterion.get("value"),
+        properties,
+        errors,
+    )
+
+
+def _validate_criterion_parts(
+    prefix,
+    field,
+    filter_name,
+    value_type,
+    value,
+    properties,
+    errors,
+):
     schema_property = properties.get(field)
     if properties and schema_property is None:
         errors.append(f"{prefix}.field {field} is not defined in the beneficiary schema.")
@@ -209,3 +251,40 @@ def _validate_criterion(prefix, criterion, properties, errors):
         errors.append(
             f"{prefix}.filter {filter_name} is unsupported for {value_type}."
         )
+    elif not _value_can_be_cast(value, value_type):
+        errors.append(
+            f"{prefix}.value cannot be cast to {value_type}."
+        )
+
+
+def _value_can_be_cast(value, value_type):
+    if value_type == "string":
+        return isinstance(value, str)
+    if value_type == "boolean":
+        return isinstance(value, bool) or (
+            isinstance(value, str) and value.lower() in {"true", "false"}
+        )
+    if value_type == "integer":
+        if isinstance(value, bool):
+            return False
+        try:
+            return Decimal(str(value)) == int(Decimal(str(value)))
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            return False
+    if value_type in {"decimal", "number", "numeric"}:
+        if isinstance(value, bool):
+            return False
+        try:
+            Decimal(str(value))
+            return True
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    if value_type == "date":
+        if isinstance(value, date):
+            return True
+        try:
+            date.fromisoformat(value)
+            return True
+        except (TypeError, ValueError):
+            return False
+    return False

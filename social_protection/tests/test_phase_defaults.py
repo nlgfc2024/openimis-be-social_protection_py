@@ -96,6 +96,47 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
             "GROUP": {},
         })
 
+    def test_rejects_value_that_cannot_be_cast_to_schema_type(self):
+        with self.assertRaisesMessage(ValidationError, "cannot be cast to integer"):
+            validate_benefit_plan_creation_defaults({
+                "common": {
+                    "beneficiary_data_schema": {
+                        "properties": {"number_of_children": {"type": "integer"}}
+                    },
+                    "json_ext": {
+                        "advanced_criteria": {
+                            "POTENTIAL": [{
+                                "field": "number_of_children",
+                                "filter": "gte",
+                                "type": "integer",
+                                "value": "many",
+                            }]
+                        }
+                    },
+                },
+                "INDIVIDUAL": {},
+                "GROUP": {},
+            })
+
+    def test_validates_legacy_condition_against_schema(self):
+        with self.assertRaisesMessage(ValidationError, "not defined"):
+            validate_benefit_plan_creation_defaults({
+                "common": {
+                    "beneficiary_data_schema": {
+                        "properties": {"district": {"type": "string"}}
+                    },
+                    "json_ext": {
+                        "advanced_criteria": [{
+                            "custom_filter_condition": (
+                                'unregistered__exact__string="value"'
+                            )
+                        }]
+                    },
+                },
+                "INDIVIDUAL": {},
+                "GROUP": {},
+            })
+
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):
