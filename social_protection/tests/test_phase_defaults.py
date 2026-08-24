@@ -158,6 +158,43 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                 "GROUP": {},
             })
 
+    def test_accepts_enrolment_ranking_snapshot(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "*": {
+                            "order_by": [
+                                {"field": "json_ext__score", "cast": "float", "direction": "desc", "nulls": "last"},
+                                "last_name",
+                            ],
+                            "tie_breaker": "id",
+                            "limit": {"percentage": 20, "respect_max_beneficiaries": True},
+                        }
+                    }
+                }
+            },
+            "INDIVIDUAL": {},
+            "GROUP": {},
+        })
+
+    def test_rejects_invalid_enrolment_ranking_configuration(self):
+        with self.assertRaisesMessage(ValidationError, "between 1 and 100"):
+            validate_benefit_plan_creation_defaults({
+                "common": {
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "POTENTIAL": {
+                                "order_by": [{"field": "id", "cast": "decimal"}],
+                                "limit": {"percentage": 0},
+                            }
+                        }
+                    }
+                },
+                "INDIVIDUAL": {},
+                "GROUP": {},
+            })
+
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):

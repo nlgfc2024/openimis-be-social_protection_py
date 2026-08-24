@@ -57,7 +57,7 @@ class JsonExtMixin:
         return {
             key: value
             for key, value in json_ext.items()
-            if key != "advanced_criteria"
+            if key not in {"advanced_criteria", "enrolment_ranking"}
         }
 
 

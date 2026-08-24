@@ -42,36 +42,43 @@ def _json_object(value):
     return value if isinstance(value, dict) else None
 
 
-def _submitted_advanced_criteria(data):
+def _submitted_criteria_config(data):
     if "json_ext" not in data:
         return False, None
     json_ext = _json_object(data.get("json_ext"))
-    if json_ext is None or "advanced_criteria" not in json_ext:
+    criteria_keys = {"advanced_criteria", "enrolment_ranking"}
+    submitted_keys = criteria_keys.intersection(json_ext or {})
+    if json_ext is None or not submitted_keys:
         return False, None
-    return True, json_ext["advanced_criteria"]
+    return True, {key: json_ext[key] for key in submitted_keys}
 
 
 def check_criteria_perms(user, permission, data, current=None):
-    submitted, criteria = _submitted_advanced_criteria(data)
+    submitted, criteria_config = _submitted_criteria_config(data)
     if not submitted:
         return
     current_json_ext = _json_object(current.json_ext) if current else None
-    current_criteria = (current_json_ext or {}).get("advanced_criteria")
-    if criteria != current_criteria and not user.has_perms(permission):
+    current_config = {
+        key: (current_json_ext or {}).get(key)
+        for key in criteria_config
+    }
+    if criteria_config != current_config and not user.has_perms(permission):
         raise ValidationError("mutation.lack_of_criteria_perms")
 
 
 def preserve_hidden_json_ext(user, data, current):
     """Merge criteria-only updates without erasing undisclosed extension data."""
     submitted = _json_object(data.get("json_ext"))
-    if submitted is None or "advanced_criteria" not in submitted or not current:
+    criteria_keys = {"advanced_criteria", "enrolment_ranking"}
+    submitted_keys = criteria_keys.intersection(submitted or {})
+    if submitted is None or not submitted_keys or not current:
         return
     if user.has_perms(SocialProtectionConfig.gql_schema_update_perms):
         return
     current_json_ext = _json_object(current.json_ext) or {}
     data["json_ext"] = {
         **current_json_ext,
-        "advanced_criteria": submitted["advanced_criteria"],
+        **{key: submitted[key] for key in submitted_keys},
     }
 
 
