@@ -88,3 +88,30 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
 
         self.assertIsNone(result)
+
+    def test_json_ext_resolver_strips_criteria_without_criteria_permission(self):
+        user = Mock(id=1)
+        user.has_perms.side_effect = lambda perms: perms == ["171001"]
+        benefit_plan = SimpleNamespace(json_ext={
+            "advanced_criteria": {"POTENTIAL": [{"field": "private"}]},
+            "public_value": "preserved",
+        })
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        result = BenefitPlanGQLType.resolve_json_ext(benefit_plan, info)
+
+        self.assertEqual(result, {"public_value": "preserved"})
+
+    def test_json_ext_resolver_returns_full_value_with_both_permissions(self):
+        user = Mock(id=1)
+        user.has_perms.return_value = True
+        json_ext = {
+            "advanced_criteria": {"POTENTIAL": []},
+            "public_value": "preserved",
+        }
+        benefit_plan = SimpleNamespace(json_ext=json_ext)
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        result = BenefitPlanGQLType.resolve_json_ext(benefit_plan, info)
+
+        self.assertEqual(result, json_ext)

@@ -33,10 +33,32 @@ def _have_permissions(user, permission):
 
 class JsonExtMixin:
     def resolve_json_ext(self, info):
-        perms = SocialProtectionConfig.gql_schema_search_perms
-        if _have_permissions(info.context.user, perms):
-            return self.json_ext
-        return None
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_schema_search_perms,
+        ):
+            return None
+
+        json_ext = self.json_ext or {}
+        if _have_permissions(
+            user,
+            SocialProtectionConfig.gql_benefit_plan_criteria_search_perms,
+        ):
+            return json_ext
+
+        if isinstance(json_ext, str):
+            try:
+                json_ext = json.loads(json_ext)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+        if not isinstance(json_ext, dict):
+            return {}
+        return {
+            key: value
+            for key, value in json_ext.items()
+            if key != "advanced_criteria"
+        }
 
 
 class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
