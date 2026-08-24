@@ -166,7 +166,7 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                         "*": {
                             "order_by": [
                                 {"field": "json_ext__score", "cast": "float", "direction": "desc", "nulls": "last"},
-                                "last_name",
+                                "id",
                             ],
                             "tie_breaker": "id",
                             "limit": {"percentage": 20, "respect_max_beneficiaries": True},
@@ -192,6 +192,20 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                     }
                 },
                 "INDIVIDUAL": {},
+                "GROUP": {},
+            })
+
+    def test_rejects_unknown_ranking_model_field_at_config_load(self):
+        with self.assertRaisesMessage(ValidationError, "does_not_exist is unsupported"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "*": {"order_by": ["does_not_exist"]}
+                        }
+                    }
+                },
                 "GROUP": {},
             })
 

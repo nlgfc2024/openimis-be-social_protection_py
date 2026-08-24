@@ -2,7 +2,7 @@ import copy
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 
 from core.custom_filters import CustomFilterWizardInterface
 from core.utils import validate_json_schema
@@ -209,6 +209,8 @@ def _validate_advanced_criteria(benefit_plan_type, criteria, schema, errors):
 
 
 def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
+    from individual.models import Group, Individual
+    ranking_model = Individual if benefit_plan_type == "INDIVIDUAL" else Group
     prefix = f"{benefit_plan_type} enrolment_ranking"
     if not isinstance(rankings, dict):
         errors.append(f"{prefix} must be an object.")
@@ -235,6 +237,8 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
                 if isinstance(item, str):
                     if not item or item == "-":
                         errors.append(f"{item_prefix} must name a field.")
+                    elif not _ranking_model_path_exists(ranking_model, item):
+                        errors.append(f"{item_prefix} field {item} is unsupported.")
                     continue
                 if not isinstance(item, dict):
                     errors.append(f"{item_prefix} must be a string or object.")
@@ -247,6 +251,8 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
                     )
                 if not isinstance(item.get("field"), str) or not item.get("field"):
                     errors.append(f"{item_prefix}.field must be a non-empty string.")
+                elif not _ranking_model_path_exists(ranking_model, item["field"]):
+                    errors.append(f"{item_prefix}.field {item['field']} is unsupported.")
                 if item.get("direction", "asc") not in {"asc", "desc"}:
                     errors.append(f"{item_prefix}.direction must be asc or desc.")
                 if item.get("cast") not in ({None} | RANKING_CASTS):
@@ -256,6 +262,8 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
         tie_breaker = ranking.get("tie_breaker", "id")
         if not isinstance(tie_breaker, str) or not tie_breaker:
             errors.append(f"{status_prefix}.tie_breaker must be a non-empty string.")
+        elif not _ranking_model_path_exists(ranking_model, tie_breaker):
+            errors.append(f"{status_prefix}.tie_breaker {tie_breaker} is unsupported.")
         limit = ranking.get("limit", {})
         if not isinstance(limit, dict):
             errors.append(f"{status_prefix}.limit must be an object.")
@@ -278,6 +286,23 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
             errors.append(
                 f"{status_prefix}.limit.respect_max_beneficiaries must be boolean."
             )
+
+
+def _ranking_model_path_exists(model, path):
+    parts = path.lstrip("-").split("__")
+    current_model = model
+    for index, part in enumerate(parts):
+        try:
+            field = current_model._meta.get_field(part)
+        except (FieldDoesNotExist, AttributeError):
+            return False
+        if index == 0 and part == "json_ext" and len(parts) > 1:
+            return True
+        if index < len(parts) - 1:
+            current_model = field.related_model
+            if current_model is None:
+                return False
+    return True
 
 
 def _validate_criterion(prefix, criterion, properties, errors):
