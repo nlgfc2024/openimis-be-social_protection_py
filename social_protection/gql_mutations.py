@@ -1,3 +1,5 @@
+import json
+
 import graphene as graphene
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
@@ -20,9 +22,57 @@ from social_protection.services import (
 )
 
 
-def check_perms_for_field(user, permission, data, field_string):
-    if data.get(field_string, None) and not user.has_perms(permission):
-        raise ValidationError("mutation.lack_of_schema_perms")
+def check_perms_for_field(
+    user,
+    permission,
+    data,
+    field_string,
+    error_message="mutation.lack_of_schema_perms",
+):
+    if field_string in data and not user.has_perms(permission):
+        raise ValidationError(error_message)
+
+
+def _json_object(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _submitted_advanced_criteria(data):
+    if "json_ext" not in data:
+        return False, None
+    json_ext = _json_object(data.get("json_ext"))
+    if json_ext is None or "advanced_criteria" not in json_ext:
+        return False, None
+    return True, json_ext["advanced_criteria"]
+
+
+def check_criteria_perms(user, permission, data, current=None):
+    submitted, criteria = _submitted_advanced_criteria(data)
+    if not submitted:
+        return
+    current_json_ext = _json_object(current.json_ext) if current else None
+    current_criteria = (current_json_ext or {}).get("advanced_criteria")
+    if criteria != current_criteria and not user.has_perms(permission):
+        raise ValidationError("mutation.lack_of_criteria_perms")
+
+
+def preserve_hidden_json_ext(user, data, current):
+    """Merge criteria-only updates without erasing undisclosed extension data."""
+    submitted = _json_object(data.get("json_ext"))
+    if submitted is None or "advanced_criteria" not in submitted or not current:
+        return
+    if user.has_perms(SocialProtectionConfig.gql_schema_update_perms):
+        return
+    current_json_ext = _json_object(current.json_ext) or {}
+    data["json_ext"] = {
+        **current_json_ext,
+        "advanced_criteria": submitted["advanced_criteria"],
+    }
 
 
 class CreateBenefitPlanInputType(OpenIMISMutation.Input):
@@ -105,11 +155,11 @@ class CreateBenefitPlanMutation(
             raise ValidationError("mutation.authentication_required")
         check_perms_for_field(
             user, SocialProtectionConfig.gql_schema_create_perms,
-            data, 'beneficiary_data_schema'
+            data, 'beneficiary_data_schema', "mutation.lack_of_schema_perms"
         )
-        check_perms_for_field(
-            user, SocialProtectionConfig.gql_schema_create_perms,
-            data, 'json_ext'
+        check_criteria_perms(
+            user, SocialProtectionConfig.gql_benefit_plan_criteria_update_perms,
+            data,
         )
 
     @classmethod
@@ -150,11 +200,12 @@ class UpdateBenefitPlanMutation(
             raise ValidationError("mutation.authentication_required")
         check_perms_for_field(
             user, SocialProtectionConfig.gql_schema_update_perms,
-            data, 'beneficiary_data_schema'
+            data, 'beneficiary_data_schema', "mutation.lack_of_schema_perms"
         )
-        check_perms_for_field(
-            user, SocialProtectionConfig.gql_schema_update_perms,
-            data, 'json_ext'
+        current = BenefitPlan.objects.filter(id=data.get("id")).first()
+        check_criteria_perms(
+            user, SocialProtectionConfig.gql_benefit_plan_criteria_update_perms,
+            data, current,
         )
 
     @classmethod
@@ -165,6 +216,9 @@ class UpdateBenefitPlanMutation(
             data.pop('client_mutation_id')
         if "client_mutation_label" in data:
             data.pop('client_mutation_label')
+
+        current = BenefitPlan.objects.filter(id=data.get("id")).first()
+        preserve_hidden_json_ext(user, data, current)
 
         service = BenefitPlanService(user)
         if SocialProtectionConfig.gql_check_benefit_plan_update:

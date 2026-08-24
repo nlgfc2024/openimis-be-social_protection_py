@@ -1,11 +1,15 @@
+import copy
 import logging
-import json
 
 from django.apps import AppConfig
 
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
-from core.module_config_registry import register_reloader
+from core.module_config_registry import register_reloader, register_validator
+from social_protection.phase_defaults import (
+    validate_benefit_plan_creation_defaults,
+    validate_mandatory_enrollment_criteria,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,20 @@ DEFAULT_CONFIG = {
     "gql_schema_create_perms": ["171002"],
     "gql_schema_update_perms": ["171003"],
     "gql_schema_delete_perms": ["171004"],
+    "gql_benefit_plan_criteria_search_perms": ["171005"],
+    "gql_benefit_plan_criteria_update_perms": ["171006"],
+    "benefit_plan_creation_defaults": {
+        "common": {
+            "beneficiary_data_schema": {},
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        },
+        "INDIVIDUAL": {},
+        "GROUP": {},
+    },
+    "mandatory_enrollment_criteria": {
+        "INDIVIDUAL": {},
+        "GROUP": {},
+    },
     # Activity/project rights (208001, 209001–209006) now belong to
     # project_social_protection; removed here to avoid dual ownership. The seeding
     # migration social_protection/0017 that grants them to admin is left in place.
@@ -83,6 +101,10 @@ class SocialProtectionConfig(AppConfig):
     gql_schema_create_perms = None
     gql_schema_update_perms = None
     gql_schema_delete_perms = None
+    gql_benefit_plan_criteria_search_perms = None
+    gql_benefit_plan_criteria_update_perms = None
+    benefit_plan_creation_defaults = None
+    mandatory_enrollment_criteria = None
 
     gql_check_benefit_plan_update = None
     gql_check_beneficiary_crud = None
@@ -115,14 +137,22 @@ class SocialProtectionConfig(AppConfig):
         from core.models import ModuleConfiguration
 
         cfg = ModuleConfiguration.get_or_default(self.name, DEFAULT_CONFIG)
+        self.__validate_config(cfg)
         self.__load_config(cfg)
         self._set_up_workflows()
         self.__register_masking_class()
+        register_validator(self.name, self._validate_module_config)
         register_reloader(self.name, self._reload_module_config)
 
+    def _merge_with_defaults(self, instance):
+        return {**copy.deepcopy(DEFAULT_CONFIG), **instance._cfg}
+
+    def _validate_module_config(self, instance):
+        self.__validate_config(self._merge_with_defaults(instance))
+
     def _reload_module_config(self, instance):
-        db_config = json.loads(instance.config)
-        config = {**DEFAULT_CONFIG, **db_config}
+        config = self._merge_with_defaults(instance)
+        self.__validate_config(config)
         self.__load_config(config)
 
         # Workflow needs to be re-registered, otherwise default/invalid ones would apply
@@ -193,6 +223,15 @@ class SocialProtectionConfig(AppConfig):
         CustomFilterRegistryPoint.register_custom_filters(
             module_name=cls.name,
             custom_filter_class_list=[BenefitPlanCustomFilterWizard]
+        )
+
+    @classmethod
+    def __validate_config(cls, cfg):
+        validate_benefit_plan_creation_defaults(
+            cfg.get("benefit_plan_creation_defaults", {})
+        )
+        validate_mandatory_enrollment_criteria(
+            cfg.get("mandatory_enrollment_criteria", {})
         )
 
     def __register_masking_class(cls):

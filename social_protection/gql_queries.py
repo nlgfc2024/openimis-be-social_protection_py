@@ -1,3 +1,5 @@
+import json
+
 import graphene
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import Q
@@ -31,15 +33,38 @@ def _have_permissions(user, permission):
 
 class JsonExtMixin:
     def resolve_json_ext(self, info):
-        perms = SocialProtectionConfig.gql_schema_search_perms
-        if _have_permissions(info.context.user, perms):
-            return self.json_ext
-        return None
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_schema_search_perms,
+        ):
+            return None
+
+        json_ext = self.json_ext or {}
+        if _have_permissions(
+            user,
+            SocialProtectionConfig.gql_benefit_plan_criteria_search_perms,
+        ):
+            return json_ext
+
+        if isinstance(json_ext, str):
+            try:
+                json_ext = json.loads(json_ext)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+        if not isinstance(json_ext, dict):
+            return {}
+        return {
+            key: value
+            for key, value in json_ext.items()
+            if key != "advanced_criteria"
+        }
 
 
 class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     has_payment_plans = graphene.Boolean()
+    advanced_criteria = graphene.JSONString()
 
     class Meta:
         model = BenefitPlan
@@ -75,6 +100,20 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
 
     def resolve_has_payment_plans(self, info):
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()
+
+    def resolve_advanced_criteria(self, info):
+        perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
+        if _have_permissions(info.context.user, perms):
+            json_ext = self.json_ext or {}
+            if isinstance(json_ext, str):
+                try:
+                    json_ext = json.loads(json_ext)
+                except (TypeError, json.JSONDecodeError):
+                    return {}
+            if isinstance(json_ext, dict):
+                return json_ext.get("advanced_criteria", {})
+            return {}
+        return None
 
 
 class BeneficiarySharedFilterMixin:
