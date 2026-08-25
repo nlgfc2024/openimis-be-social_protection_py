@@ -161,6 +161,9 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
     def test_accepts_enrolment_ranking_snapshot(self):
         validate_benefit_plan_creation_defaults({
             "common": {
+                "beneficiary_data_schema": {
+                    "properties": {"score": {"type": "number"}}
+                },
                 "json_ext": {
                     "enrolment_ranking": {
                         "*": {
@@ -206,6 +209,49 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                         }
                     }
                 },
+                "GROUP": {},
+            })
+
+    def test_rejects_ranking_cast_incompatible_with_schema_at_config_load(self):
+        with self.assertRaisesMessage(ValidationError, "cast int is incompatible"):
+            validate_benefit_plan_creation_defaults({
+                "common": {
+                    "beneficiary_data_schema": {
+                        "properties": {
+                            "household_wealth_quintile": {"type": "string"},
+                        }
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "*": {
+                                "order_by": [{
+                                    "field": "json_ext__household_wealth_quintile",
+                                    "cast": "int",
+                                }]
+                            }
+                        }
+                    },
+                },
+                "INDIVIDUAL": {},
+                "GROUP": {},
+            })
+
+    def test_rejects_untyped_json_ranking_cast_at_config_load(self):
+        with self.assertRaisesMessage(ValidationError, "to be typed"):
+            validate_benefit_plan_creation_defaults({
+                "common": {
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "*": {
+                                "order_by": [{
+                                    "field": "json_ext__score",
+                                    "cast": "float",
+                                }]
+                            }
+                        }
+                    },
+                },
+                "INDIVIDUAL": {},
                 "GROUP": {},
             })
 

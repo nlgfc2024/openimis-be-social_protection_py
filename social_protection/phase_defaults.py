@@ -165,6 +165,7 @@ def _validate_merged_defaults(benefit_plan_type, defaults, errors):
         _validate_enrolment_ranking(
             benefit_plan_type,
             json_ext["enrolment_ranking"],
+            schema or {},
             errors,
         )
 
@@ -208,7 +209,7 @@ def _validate_advanced_criteria(benefit_plan_type, criteria, schema, errors):
             _validate_criterion(prefix, criterion, properties, errors)
 
 
-def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
+def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
     from individual.models import Group, Individual
     ranking_model = Individual if benefit_plan_type == "INDIVIDUAL" else Group
     prefix = f"{benefit_plan_type} enrolment_ranking"
@@ -257,6 +258,14 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
                     errors.append(f"{item_prefix}.direction must be asc or desc.")
                 if item.get("cast") not in ({None} | RANKING_CASTS):
                     errors.append(f"{item_prefix}.cast is unsupported.")
+                elif item.get("cast"):
+                    _validate_ranking_cast(
+                        item_prefix,
+                        item.get("field"),
+                        item["cast"],
+                        schema,
+                        errors,
+                    )
                 if item.get("nulls") not in {None, "first", "last"}:
                     errors.append(f"{item_prefix}.nulls must be first or last.")
         tie_breaker = ranking.get("tie_breaker", "id")
@@ -286,6 +295,39 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, errors):
             errors.append(
                 f"{status_prefix}.limit.respect_max_beneficiaries must be boolean."
             )
+
+
+def _validate_ranking_cast(prefix, path, cast, schema, errors):
+    """Validate JSON casts from declared data types without startup DB access."""
+    if not isinstance(path, str) or not path.startswith("json_ext__"):
+        return
+    property_name = path.split("__", 1)[1]
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    definition = properties.get(property_name)
+    if not isinstance(definition, dict):
+        errors.append(
+            f"{prefix}.cast requires json_ext property {property_name} "
+            "to be typed in beneficiary_data_schema."
+        )
+        return
+
+    schema_type = definition.get("type")
+    compatible_types = {
+        "int": {"integer"},
+        "float": {"integer", "number", "numeric"},
+        "date": {"string"},
+        "str": {"string", "integer", "number", "numeric", "boolean"},
+    }[cast]
+    if schema_type not in compatible_types:
+        errors.append(
+            f"{prefix}.cast {cast} is incompatible with "
+            f"beneficiary_data_schema property {property_name} of type {schema_type}."
+        )
+    if cast == "date" and definition.get("format") not in {"date", "date-time"}:
+        errors.append(
+            f"{prefix}.cast date requires beneficiary_data_schema property "
+            f"{property_name} to use format date or date-time."
+        )
 
 
 def _ranking_model_path_exists(model, path):
