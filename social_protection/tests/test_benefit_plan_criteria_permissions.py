@@ -19,6 +19,7 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         data = {"json_ext": {"advanced_criteria": {"ACTIVE": []}}}
         current = SimpleNamespace(json_ext={
             "advanced_criteria": {"POTENTIAL": []},
+            "enrolment_ranking": {"*": {"order_by": ["id"]}},
             "private_value": "preserved",
         })
 
@@ -26,6 +27,24 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
 
         self.assertEqual(data["json_ext"]["private_value"], "preserved")
         self.assertEqual(data["json_ext"]["advanced_criteria"], {"ACTIVE": []})
+        self.assertEqual(
+            data["json_ext"]["enrolment_ranking"],
+            {"*": {"order_by": ["id"]}},
+        )
+
+    def test_ranking_change_requires_criteria_permission(self):
+        user = Mock()
+        user.has_perms.return_value = False
+        current = SimpleNamespace(
+            json_ext={"enrolment_ranking": {"*": {"order_by": ["id"]}}}
+        )
+        with self.assertRaisesMessage(ValidationError, "lack_of_criteria_perms"):
+            check_criteria_perms(
+                user,
+                ["171006"],
+                {"json_ext": {"enrolment_ranking": {"*": {"order_by": ["-id"]}}}},
+                current,
+            )
 
     def test_empty_schema_still_requires_permission(self):
         user = Mock()
@@ -89,11 +108,37 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
 
         self.assertIsNone(result)
 
+    def test_ranking_resolver_uses_criteria_permission_without_schema_permission(self):
+        user = Mock(id=1)
+        user.has_perms.side_effect = lambda perms: perms == ["171005"]
+        ranking = {"*": {"order_by": ["id"]}}
+        benefit_plan = SimpleNamespace(json_ext={"enrolment_ranking": ranking})
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        self.assertEqual(
+            BenefitPlanGQLType.resolve_enrolment_ranking(benefit_plan, info),
+            ranking,
+        )
+        self.assertIsNone(BenefitPlanGQLType.resolve_json_ext(benefit_plan, info))
+
+    def test_ranking_resolver_hides_ranking_without_criteria_permission(self):
+        user = Mock(id=1)
+        user.has_perms.return_value = False
+        benefit_plan = SimpleNamespace(
+            json_ext={"enrolment_ranking": {"*": {"order_by": ["id"]}}}
+        )
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        self.assertIsNone(
+            BenefitPlanGQLType.resolve_enrolment_ranking(benefit_plan, info)
+        )
+
     def test_json_ext_resolver_strips_criteria_without_criteria_permission(self):
         user = Mock(id=1)
         user.has_perms.side_effect = lambda perms: perms == ["171001"]
         benefit_plan = SimpleNamespace(json_ext={
             "advanced_criteria": {"POTENTIAL": [{"field": "private"}]},
+            "enrolment_ranking": {"*": {"order_by": ["id"]}},
             "public_value": "preserved",
         })
         info = SimpleNamespace(context=SimpleNamespace(user=user))
