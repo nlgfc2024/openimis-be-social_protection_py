@@ -54,7 +54,7 @@ def on_confirm_enrollment_of_individual(**kwargs):
                 validations={}
             )
             data_source_objects.append(source)
-        IndividualDataSource.objects.bulk_create(data_source_objects)
+        IndividualDataSource.objects.bulk_create(data_source_objects, batch_size=1000)
         json_ext = {
             'source_name': upload_record.data_upload.source_name,
             'workflow': upload_record.workflow,
@@ -86,6 +86,6 @@ def on_confirm_enrollment_of_individual(**kwargs):
             )
             new_beneficiaries.append(beneficiary)
         try:
-            Beneficiary.objects.bulk_create(new_beneficiaries)
+            Beneficiary.objects.bulk_create(new_beneficiaries, batch_size=1000)
         except ValidationError as e:
             logger.error(f"Validation error occurred: {e}")

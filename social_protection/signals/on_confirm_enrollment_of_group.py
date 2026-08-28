@@ -62,7 +62,7 @@ def on_confirm_enrollment_of_group(**kwargs):
                 uuid=uuid.uuid4(),
             )
             data_source_objects.append(source)
-        IndividualDataSource.objects.bulk_create(data_source_objects)
+        IndividualDataSource.objects.bulk_create(data_source_objects, batch_size=1000)
         json_ext = {
             'source_name': upload_record.data_upload.source_name,
             'workflow': upload_record.workflow,

@@ -357,7 +357,7 @@ def on_task_complete_action(business_event, **kwargs):
                 )
                 new_beneficiaries.append(beneficiary)
             try:
-                Beneficiary.objects.bulk_create(new_beneficiaries)
+                Beneficiary.objects.bulk_create(new_beneficiaries, batch_size=1000)
                 BeneficiaryImportService(user).synchronize_data_for_reporting(
                     upload_id=data['task']['json_ext']['data_upload_id'],
                     benefit_plan=data['task']['json_ext']['benefit_plan_id']
@@ -384,7 +384,7 @@ def on_task_complete_action(business_event, **kwargs):
                 )
                 new_group_beneficiaries.append(group_beneficiary)
             try:
-                GroupBeneficiary.objects.bulk_create(new_group_beneficiaries)
+                GroupBeneficiary.objects.bulk_create(new_group_beneficiaries, batch_size=1000)
             except ValidationError as e:
                 logger.error(f"Validation error occurred: {e}")
             return

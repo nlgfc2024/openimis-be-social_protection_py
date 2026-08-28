@@ -1,5 +1,9 @@
+import logging
+
 from django.apps import apps
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 is_unit_test_env = getattr(settings, 'IS_UNIT_TEST_ENV', False)
 
@@ -45,6 +49,25 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
                 'id'
             ]
             queryset_pagination = 5000
+
+        def bulk(self, actions, using=None, from_celery=False, **kwargs):
+            try:
+                return super().bulk(
+                    actions,
+                    using=using,
+                    from_celery=from_celery,
+                    **kwargs,
+                )
+            except Exception:
+                # Search indexing is secondary to the database transaction.
+                # A stopped Celery broker must not roll back an approved Phase
+                # update (or any other beneficiary-related database change).
+                logger.warning(
+                    "Unable to queue beneficiary OpenSearch synchronization; "
+                    "the database change will still be committed.",
+                    exc_info=True,
+                )
+                return None
 
         def get_instances_from_related(self, related_instance):
             if isinstance(related_instance, BenefitPlan):
