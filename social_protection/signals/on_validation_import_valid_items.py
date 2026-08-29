@@ -28,6 +28,7 @@ from tasks_management.apps import TasksManagementConfig
 from tasks_management.models import Task
 from tasks_management.services import TaskService
 from workflow.services import WorkflowService
+from social_protection.utils import bulk_create_in_batches
 
 logger = logging.getLogger(__name__)
 
@@ -344,9 +345,8 @@ def on_task_complete_action(business_event, **kwargs):
                 individualdatasource__upload_id=data['task']['json_ext']['data_upload_id']
             )
             user = User.objects.get(id=data['user']['id'])
-            new_beneficiaries = []
-            for individual in individuals_to_enroll:
-                beneficiary = Beneficiary(
+            new_beneficiaries = (
+                Beneficiary(
                     individual=individual,
                     benefit_plan_id=data['task']['json_ext']['benefit_plan_id'],
                     status=data['task']['json_ext']['beneficiary_status'],
@@ -354,10 +354,10 @@ def on_task_complete_action(business_event, **kwargs):
                     user_created=user,
                     user_updated=user,
                     uuid=uuid.uuid4(),
-                )
-                new_beneficiaries.append(beneficiary)
+                ) for individual in individuals_to_enroll.iterator(chunk_size=1000)
+            )
             try:
-                Beneficiary.objects.bulk_create(new_beneficiaries, batch_size=1000)
+                bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
                 BeneficiaryImportService(user).synchronize_data_for_reporting(
                     upload_id=data['task']['json_ext']['data_upload_id'],
                     benefit_plan=data['task']['json_ext']['benefit_plan_id']
@@ -366,25 +366,33 @@ def on_task_complete_action(business_event, **kwargs):
                 logger.error(f"Validation error occurred: {e}")
             return
         elif business_event == SocialProtectionConfig.validation_group_enrollment:
-            head_groups_to_enroll = Individual.objects.filter(
-                individualdatasource__upload_id=data['task']['json_ext']['data_upload_id']
-            )
+            head_groups_to_enroll = GroupIndividual.objects.filter(
+                is_deleted=False,
+                role=GroupIndividual.Role.HEAD,
+                individual__individualdatasource__upload_id=(
+                    data['task']['json_ext']['data_upload_id']
+                ),
+            ).select_related('group', 'individual').distinct()
             user = User.objects.get(id=data['user']['id'])
-            new_group_beneficiaries = []
-            for head_individual in head_groups_to_enroll:
-                group_individual_head = GroupIndividual.objects.filter(individual=head_individual).first()
-                group_beneficiary = GroupBeneficiary(
-                    group=group_individual_head.group,
-                    benefit_plan_id=data['task']['json_ext']['benefit_plan_id'],
-                    status=data['task']['json_ext']['beneficiary_status'],
-                    json_ext=head_individual.json_ext,
-                    user_created=user,
-                    user_updated=user,
-                    uuid=uuid.uuid4(),
-                )
-                new_group_beneficiaries.append(group_beneficiary)
+            def new_group_beneficiaries():
+                for group_individual_head in head_groups_to_enroll.iterator(
+                    chunk_size=1000
+                ):
+                    head_individual = group_individual_head.individual
+                    yield GroupBeneficiary(
+                        group=group_individual_head.group,
+                        benefit_plan_id=data['task']['json_ext']['benefit_plan_id'],
+                        status=data['task']['json_ext']['beneficiary_status'],
+                        json_ext=head_individual.json_ext,
+                        user_created=user,
+                        user_updated=user,
+                        uuid=uuid.uuid4(),
+                    )
             try:
-                GroupBeneficiary.objects.bulk_create(new_group_beneficiaries, batch_size=1000)
+                bulk_create_in_batches(
+                    GroupBeneficiary.objects,
+                    new_group_beneficiaries(),
+                )
             except ValidationError as e:
                 logger.error(f"Validation error occurred: {e}")
             return

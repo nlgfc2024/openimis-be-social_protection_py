@@ -6,6 +6,19 @@ from django.test import SimpleTestCase
 from social_protection.signals.on_confirm_enrollment_of_individual import (
     on_confirm_enrollment_of_individual,
 )
+from social_protection.utils import bulk_create_in_batches
+
+
+class BulkEnrollmentBatchTest(SimpleTestCase):
+    def test_large_iterable_is_written_in_bounded_batches(self):
+        manager = Mock()
+
+        bulk_create_in_batches(manager, range(2501), batch_size=1000)
+
+        batch_sizes = [
+            len(call.args[0]) for call in manager.bulk_create.call_args_list
+        ]
+        self.assertEqual(batch_sizes, [1000, 1000, 501])
 
 
 class EnrollmentCapSignalTest(SimpleTestCase):
