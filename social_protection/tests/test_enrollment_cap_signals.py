@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from social_protection.models import BenefitPlan
 from social_protection.signals.on_confirm_enrollment_of_individual import (
     on_confirm_enrollment_of_individual,
 )
@@ -30,24 +30,22 @@ class BulkEnrollmentBatchTest(TestCase):
                 self.calls += 1
                 if self.calls == 2:
                     raise ValidationError("second batch failed")
-                return BenefitPlan.objects.bulk_create(
+                return Group.objects.bulk_create(
                     objects,
                     batch_size=batch_size,
                 )
 
-        plans = (
-            BenefitPlan(
-                code=f"P{index}",
-                name=f"Plan {index}",
-                type=BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE,
-            )
+        groups = (
+            Group(name=f"atomic-batch-test-{index}")
             for index in range(3)
         )
 
         with self.assertRaises(ValidationError):
-            bulk_create_in_batches(FailingManager(), plans, batch_size=2)
+            bulk_create_in_batches(FailingManager(), groups, batch_size=2)
 
-        self.assertFalse(BenefitPlan.objects.filter(code__startswith="P").exists())
+        self.assertFalse(
+            Group.objects.filter(name__startswith="atomic-batch-test-").exists()
+        )
 
 
 class EnrollmentCapSignalTest(TestCase):
