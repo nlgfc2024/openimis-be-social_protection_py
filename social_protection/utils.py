@@ -1,6 +1,8 @@
 from typing import Iterable
-from django.db.models import Q
+
 import pandas as pd
+from django.db import transaction
+from django.db.models import Q
 
 from individual.models import IndividualDataSource
 
@@ -10,14 +12,15 @@ BULK_ENROLLMENT_BATCH_SIZE = 1000
 
 def bulk_create_in_batches(manager, objects, batch_size=BULK_ENROLLMENT_BATCH_SIZE):
     """Persist an iterable without retaining the complete enrollment in memory."""
-    batch = []
-    for obj in objects:
-        batch.append(obj)
-        if len(batch) == batch_size:
+    with transaction.atomic():
+        batch = []
+        for obj in objects:
+            batch.append(obj)
+            if len(batch) == batch_size:
+                manager.bulk_create(batch, batch_size=batch_size)
+                batch = []
+        if batch:
             manager.bulk_create(batch, batch_size=batch_size)
-            batch = []
-    if batch:
-        manager.bulk_create(batch, batch_size=batch_size)
 
 
 def load_dataframe(

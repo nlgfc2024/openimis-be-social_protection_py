@@ -1,7 +1,6 @@
-import logging
 import uuid
 
-from django.core.exceptions import ValidationError
+from django.db import transaction
 from individual.models import (
     IndividualDataSourceUpload,
     IndividualDataSource,
@@ -20,9 +19,8 @@ from tasks_management.services import (
     TaskService
 )
 
-logger = logging.getLogger(__name__)
 
-
+@transaction.atomic
 def on_confirm_enrollment_of_group(**kwargs):
     from core import datetime
     result = kwargs.get('result', None)
@@ -79,19 +77,21 @@ def on_confirm_enrollment_of_group(**kwargs):
             'json_ext': json_ext
         })
     else:
-        for group in groups_to_upload:
-            head_group_individual = GroupIndividual.objects.filter(
-                is_deleted=False,
-                group=group,
-                role=GroupIndividual.Role.HEAD
-            ).first()
-            group_beneficiary = GroupBeneficiary(
-                group=group,
+        group_heads = GroupIndividual.objects.filter(
+            is_deleted=False,
+            group_id__in=group_ids,
+            role=GroupIndividual.Role.HEAD,
+        ).select_related('group', 'individual').distinct()
+        group_beneficiaries = (
+            GroupBeneficiary(
+                group=group_head.group,
                 benefit_plan_id=benefit_plan_id,
                 status=status,
-                json_ext=head_group_individual.individual.json_ext
+                json_ext=group_head.individual.json_ext,
+                user_created=user,
+                user_updated=user,
+                uuid=uuid.uuid4(),
             )
-            try:
-                group_beneficiary.save(username=user.username)
-            except ValidationError as e:
-                logger.error(f"Validation error occurred: {e}")
+            for group_head in group_heads.iterator(chunk_size=1000)
+        )
+        bulk_create_in_batches(GroupBeneficiary.objects, group_beneficiaries)

@@ -4,7 +4,6 @@ import random
 import string
 from django.contrib.postgres.aggregates import ArrayAgg
 from django.db.models import F
-from django.core.exceptions import ValidationError
 from typing import List
 
 from core.models import User
@@ -356,14 +355,11 @@ def on_task_complete_action(business_event, **kwargs):
                     uuid=uuid.uuid4(),
                 ) for individual in individuals_to_enroll.iterator(chunk_size=1000)
             )
-            try:
-                bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
-                BeneficiaryImportService(user).synchronize_data_for_reporting(
-                    upload_id=data['task']['json_ext']['data_upload_id'],
-                    benefit_plan=data['task']['json_ext']['benefit_plan_id']
-                )
-            except ValidationError as e:
-                logger.error(f"Validation error occurred: {e}")
+            bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
+            BeneficiaryImportService(user).synchronize_data_for_reporting(
+                upload_id=data['task']['json_ext']['data_upload_id'],
+                benefit_plan=data['task']['json_ext']['benefit_plan_id']
+            )
             return
         elif business_event == SocialProtectionConfig.validation_group_enrollment:
             head_groups_to_enroll = GroupIndividual.objects.filter(
@@ -388,13 +384,10 @@ def on_task_complete_action(business_event, **kwargs):
                         user_updated=user,
                         uuid=uuid.uuid4(),
                     )
-            try:
-                bulk_create_in_batches(
-                    GroupBeneficiary.objects,
-                    new_group_beneficiaries(),
-                )
-            except ValidationError as e:
-                logger.error(f"Validation error occurred: {e}")
+            bulk_create_in_batches(
+                GroupBeneficiary.objects,
+                new_group_beneficiaries(),
+            )
             return
         elif business_event == SocialProtectionConfig.validation_import_group_valid_items:
             BaseGroupColumnAggregationClass.group_data_sources_into_entities(

@@ -1,15 +1,17 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase
+from django.core.exceptions import ValidationError
+from django.test import TestCase
 
+from social_protection.models import BenefitPlan
 from social_protection.signals.on_confirm_enrollment_of_individual import (
     on_confirm_enrollment_of_individual,
 )
 from social_protection.utils import bulk_create_in_batches
 
 
-class BulkEnrollmentBatchTest(SimpleTestCase):
+class BulkEnrollmentBatchTest(TestCase):
     def test_large_iterable_is_written_in_bounded_batches(self):
         manager = Mock()
 
@@ -20,8 +22,35 @@ class BulkEnrollmentBatchTest(SimpleTestCase):
         ]
         self.assertEqual(batch_sizes, [1000, 1000, 501])
 
+    def test_later_batch_failure_rolls_back_earlier_batches(self):
+        class FailingManager:
+            calls = 0
 
-class EnrollmentCapSignalTest(SimpleTestCase):
+            def bulk_create(self, objects, batch_size):
+                self.calls += 1
+                if self.calls == 2:
+                    raise ValidationError("second batch failed")
+                return BenefitPlan.objects.bulk_create(
+                    objects,
+                    batch_size=batch_size,
+                )
+
+        plans = (
+            BenefitPlan(
+                code=f"P{index}",
+                name=f"Plan {index}",
+                type=BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE,
+            )
+            for index in range(3)
+        )
+
+        with self.assertRaises(ValidationError):
+            bulk_create_in_batches(FailingManager(), plans, batch_size=2)
+
+        self.assertFalse(BenefitPlan.objects.filter(code__startswith="P").exists())
+
+
+class EnrollmentCapSignalTest(TestCase):
     def _result(self, selected):
         return {
             "benefit_plan_id": "plan-id",

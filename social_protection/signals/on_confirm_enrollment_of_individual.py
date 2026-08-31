@@ -1,7 +1,6 @@
-import logging
 import uuid
 
-from django.core.exceptions import ValidationError
+from django.db import transaction
 from individual.models import (
     IndividualDataSourceUpload,
     IndividualDataSource
@@ -19,9 +18,8 @@ from tasks_management.services import (
     TaskService
 )
 
-logger = logging.getLogger(__name__)
 
-
+@transaction.atomic
 def on_confirm_enrollment_of_individual(**kwargs):
     from core import datetime
     result = kwargs.get('result', None)
@@ -82,7 +80,4 @@ def on_confirm_enrollment_of_individual(**kwargs):
                 uuid=uuid.uuid4(),
             ) for individual in individuals_to_upload
         )
-        try:
-            bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
-        except ValidationError as e:
-            logger.error(f"Validation error occurred: {e}")
+        bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
