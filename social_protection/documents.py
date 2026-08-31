@@ -9,6 +9,8 @@ is_unit_test_env = getattr(settings, 'IS_UNIT_TEST_ENV', False)
 
 # Check if the 'opensearch_reports' app is in INSTALLED_APPS
 if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
+    from kombu.exceptions import OperationalError as BrokerOperationalError
+    from opensearchpy.exceptions import OpenSearchException
     from opensearch_reports.service import BaseSyncDocument
     from django_opensearch_dsl import fields as opensearch_fields
     from django_opensearch_dsl.registries import registry
@@ -58,7 +60,13 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
                     from_celery=from_celery,
                     **kwargs,
                 )
-            except Exception:
+            except (
+                BrokerOperationalError,
+                OpenSearchException,
+                ConnectionError,
+                TimeoutError,
+                OSError,
+            ):
                 # Search indexing is secondary to the database transaction.
                 # A stopped Celery broker must not roll back an approved Phase
                 # update (or any other beneficiary-related database change).
