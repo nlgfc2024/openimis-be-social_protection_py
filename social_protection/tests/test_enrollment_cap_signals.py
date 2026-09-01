@@ -1,14 +1,54 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase
+from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
+from django.test import TestCase
 
 from social_protection.signals.on_confirm_enrollment_of_individual import (
     on_confirm_enrollment_of_individual,
 )
+from social_protection.utils import bulk_create_in_batches
 
 
-class EnrollmentCapSignalTest(SimpleTestCase):
+class BulkEnrollmentBatchTest(TestCase):
+    def test_large_iterable_is_written_in_bounded_batches(self):
+        manager = Mock()
+
+        bulk_create_in_batches(manager, range(2501), batch_size=1000)
+
+        batch_sizes = [
+            len(call.args[0]) for call in manager.bulk_create.call_args_list
+        ]
+        self.assertEqual(batch_sizes, [1000, 1000, 501])
+
+    def test_later_batch_failure_rolls_back_earlier_batches(self):
+        class FailingManager:
+            calls = 0
+
+            def bulk_create(self, objects, batch_size):
+                self.calls += 1
+                if self.calls == 2:
+                    raise ValidationError("second batch failed")
+                return Group.objects.bulk_create(
+                    objects,
+                    batch_size=batch_size,
+                )
+
+        groups = (
+            Group(name=f"atomic-batch-test-{index}")
+            for index in range(3)
+        )
+
+        with self.assertRaises(ValidationError):
+            bulk_create_in_batches(FailingManager(), groups, batch_size=2)
+
+        self.assertFalse(
+            Group.objects.filter(name__startswith="atomic-batch-test-").exists()
+        )
+
+
+class EnrollmentCapSignalTest(TestCase):
     def _result(self, selected):
         return {
             "benefit_plan_id": "plan-id",

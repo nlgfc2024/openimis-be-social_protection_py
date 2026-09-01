@@ -1,7 +1,6 @@
-import logging
 import uuid
 
-from django.core.exceptions import ValidationError
+from django.db import transaction
 from individual.models import (
     IndividualDataSourceUpload,
     IndividualDataSource
@@ -12,16 +11,15 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     BenefitPlan
 )
-from social_protection.utils import calculate_percentage_of_invalid_items
+from social_protection.utils import bulk_create_in_batches, calculate_percentage_of_invalid_items
 from tasks_management.models import Task
 from tasks_management.apps import TasksManagementConfig
 from tasks_management.services import (
     TaskService
 )
 
-logger = logging.getLogger(__name__)
 
-
+@transaction.atomic
 def on_confirm_enrollment_of_individual(**kwargs):
     from core import datetime
     result = kwargs.get('result', None)
@@ -42,9 +40,8 @@ def on_confirm_enrollment_of_individual(**kwargs):
             workflow="Enrollment"
         )
         upload_record.save(username=user.username)
-        data_source_objects = []
-        for individual in individuals_to_upload:
-            source = IndividualDataSource(
+        data_source_objects = (
+            IndividualDataSource(
                 uuid=uuid.uuid4(),
                 user_created=user,
                 user_updated=user,
@@ -52,9 +49,9 @@ def on_confirm_enrollment_of_individual(**kwargs):
                 individual=individual,
                 json_ext=individual.json_ext,
                 validations={}
-            )
-            data_source_objects.append(source)
-        IndividualDataSource.objects.bulk_create(data_source_objects)
+            ) for individual in individuals_to_upload
+        )
+        bulk_create_in_batches(IndividualDataSource.objects, data_source_objects)
         json_ext = {
             'source_name': upload_record.data_upload.source_name,
             'workflow': upload_record.workflow,
@@ -72,10 +69,8 @@ def on_confirm_enrollment_of_individual(**kwargs):
             'json_ext': json_ext
         })
     else:
-        new_beneficiaries = []
-        for individual in individuals_to_upload:
-            # Create a new Beneficiary instance
-            beneficiary = Beneficiary(
+        new_beneficiaries = (
+            Beneficiary(
                 individual=individual,
                 benefit_plan_id=benefit_plan_id,
                 status=status,
@@ -83,9 +78,6 @@ def on_confirm_enrollment_of_individual(**kwargs):
                 user_created=user,
                 user_updated=user,
                 uuid=uuid.uuid4(),
-            )
-            new_beneficiaries.append(beneficiary)
-        try:
-            Beneficiary.objects.bulk_create(new_beneficiaries)
-        except ValidationError as e:
-            logger.error(f"Validation error occurred: {e}")
+            ) for individual in individuals_to_upload
+        )
+        bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)

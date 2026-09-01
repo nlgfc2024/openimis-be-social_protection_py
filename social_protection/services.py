@@ -659,7 +659,7 @@ class BeneficiaryImportService:
             )
             data_source_objects.append(ds)
 
-        IndividualDataSource.objects.bulk_create(data_source_objects)
+        IndividualDataSource.objects.bulk_create(data_source_objects, batch_size=1000)
 
     def _save_row(self, row, upload):
         ds = IndividualDataSource(
