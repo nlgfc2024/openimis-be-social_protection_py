@@ -25,7 +25,10 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     GroupBeneficiary,
 )
-from social_protection.phase_defaults import apply_benefit_plan_creation_defaults
+from social_protection.phase_defaults import (
+    apply_benefit_plan_creation_defaults,
+    generate_unique_benefit_plan_code,
+)
 
 from social_protection.utils import (
     load_dataframe,
@@ -61,6 +64,10 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
             SocialProtectionConfig.benefit_plan_creation_defaults,
             obj_data,
         )
+        if not data_with_defaults.get('code'):
+            data_with_defaults['code'] = generate_unique_benefit_plan_code(
+                self.OBJECT_TYPE
+            )
         return super().create(data_with_defaults)
 
     @register_service_signal('benefit_plan_service.update')

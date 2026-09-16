@@ -1,4 +1,5 @@
 import copy
+import random
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -6,6 +7,22 @@ from django.core.exceptions import FieldDoesNotExist, ValidationError
 
 from core.custom_filters import CustomFilterWizardInterface
 from core.utils import validate_json_schema
+
+CODE_RANDOM_DIGITS = 5
+CODE_GENERATION_ATTEMPTS = 20
+
+
+def generate_unique_benefit_plan_code(model, current_date=None):
+    """Build a `<year><random 5-digit suffix>` code, retrying on collision."""
+    year = (current_date or date.today()).year
+    for _ in range(CODE_GENERATION_ATTEMPTS):
+        suffix = random.randint(0, 10 ** CODE_RANDOM_DIGITS - 1)
+        code = f"{year}{suffix:0{CODE_RANDOM_DIGITS}d}"
+        if not model.objects.filter(code=code, is_deleted=False).exists():
+            return code
+    raise ValidationError(
+        {"code": ["Unable to generate a unique benefit plan code, please retry."]}
+    )
 
 
 DEFAULT_SECTIONS = {"common", "INDIVIDUAL", "GROUP"}

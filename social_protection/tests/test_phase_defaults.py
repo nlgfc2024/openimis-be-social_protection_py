@@ -1,5 +1,6 @@
 import copy
-from unittest.mock import patch
+from datetime import date
+from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase
@@ -11,11 +12,40 @@ from social_protection.models import BenefitPlan
 from social_protection.phase_defaults import (
     apply_benefit_plan_creation_defaults,
     deep_merge,
+    generate_unique_benefit_plan_code,
     validate_benefit_plan_creation_defaults,
     validate_mandatory_enrollment_criteria,
 )
 from social_protection.services import BenefitPlanService
 from social_protection.tests.data import service_add_payload_no_ext
+
+
+class GenerateUniqueBenefitPlanCodeTest(SimpleTestCase):
+    def test_code_starts_with_year_and_has_five_extra_digits(self):
+        model = MagicMock()
+        model.objects.filter.return_value.exists.return_value = False
+
+        code = generate_unique_benefit_plan_code(model, current_date=date(2024, 1, 1))
+
+        self.assertEqual(len(code), 9)
+        self.assertTrue(code.startswith("2024"))
+        self.assertTrue(code[4:].isdigit())
+
+    def test_retries_until_an_unused_code_is_found(self):
+        model = MagicMock()
+        model.objects.filter.return_value.exists.side_effect = [True, True, False]
+
+        code = generate_unique_benefit_plan_code(model, current_date=date(2024, 1, 1))
+
+        self.assertEqual(model.objects.filter.return_value.exists.call_count, 3)
+        self.assertTrue(code.startswith("2024"))
+
+    def test_raises_when_no_unique_code_can_be_found(self):
+        model = MagicMock()
+        model.objects.filter.return_value.exists.return_value = True
+
+        with self.assertRaisesMessage(ValidationError, "Unable to generate"):
+            generate_unique_benefit_plan_code(model, current_date=date(2024, 1, 1))
 
 
 class PhaseDefaultsValidationTest(SimpleTestCase):

@@ -87,7 +87,7 @@ class CreateBenefitPlanInputType(OpenIMISMutation.Input):
         INDIVIDUAL = BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE
         GROUP = BenefitPlan.BenefitPlanType.GROUP_TYPE
 
-    code = graphene.String(required=True)
+    code = graphene.String(required=False, max_length=9)
     name = graphene.String(required=True, max_length=255)
     max_beneficiaries = graphene.Int(default_value=None)
     ceiling_per_beneficiary = graphene.Decimal(

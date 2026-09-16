@@ -20,7 +20,7 @@ class BenefitPlan(core_models.HistoryBusinessModel):
         INDIVIDUAL_TYPE = "INDIVIDUAL", _("INDIVIDUAL")
         GROUP_TYPE = "GROUP", _("GROUP")
 
-    code = models.CharField(max_length=8, null=False)
+    code = models.CharField(max_length=9, null=False)
     name = models.CharField(max_length=255, null=False)
     max_beneficiaries = models.PositiveIntegerField(null=True, blank=True)
     ceiling_per_beneficiary = models.DecimalField(
