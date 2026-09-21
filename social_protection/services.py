@@ -27,8 +27,8 @@ from social_protection.models import (
 )
 from social_protection.phase_defaults import (
     apply_benefit_plan_creation_defaults,
-    generate_unique_benefit_plan_code,
 )
+from core.code_generation import generate_unique_year_code
 
 from social_protection.utils import (
     load_dataframe,
@@ -65,9 +65,14 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
             obj_data,
         )
         if not data_with_defaults.get('code'):
-            data_with_defaults['code'] = generate_unique_benefit_plan_code(
-                self.OBJECT_TYPE
-            )
+            try:
+                data_with_defaults['code'] = generate_unique_year_code(
+                    self.OBJECT_TYPE, {"is_deleted": False}
+                )
+            except ValueError:
+                raise ValidationError({
+                    "code": ["Unable to generate a unique benefit plan code, please retry."]
+                })
         return super().create(data_with_defaults)
 
     @register_service_signal('benefit_plan_service.update')
