@@ -335,14 +335,13 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             catchment_filter = Q(pk__in=[])
             for gvh_uuid in gvh_uuids:
                 catchment_filter |= Query._get_location_filters(gvh_uuid, 2, prefix="individual__")
-            if not gvh_uuids:
-                ta_uuids = MicroCatchmentTA.objects.filter(
-                    micro_catchment__uuid=micro_catchment_uuid,
-                    validity_to__isnull=True,
-                    micro_catchment__validity_to__isnull=True,
-                ).values_list("location__uuid", flat=True)
-                for ta_uuid in ta_uuids:
-                    catchment_filter |= Query._get_location_filters(ta_uuid, 1, prefix="individual__")
+            ta_uuids = MicroCatchmentTA.objects.filter(
+                micro_catchment__uuid=micro_catchment_uuid,
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).values_list("location__uuid", flat=True)
+            for ta_uuid in ta_uuids:
+                catchment_filter |= Query._get_location_filters(ta_uuid, 1, prefix="individual__")
             filters.append(catchment_filter)
 
         parent_location = kwargs.get('parent_location')
@@ -456,14 +455,13 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             catchment_filter = Q(pk__in=[])
             for gvh_uuid in gvh_uuids:
                 catchment_filter |= Query._get_location_filters(gvh_uuid, 2, prefix="group__")
-            if not gvh_uuids:
-                ta_uuids = MicroCatchmentTA.objects.filter(
-                    micro_catchment__uuid=micro_catchment_uuid,
-                    validity_to__isnull=True,
-                    micro_catchment__validity_to__isnull=True,
-                ).values_list("location__uuid", flat=True)
-                for ta_uuid in ta_uuids:
-                    catchment_filter |= Query._get_location_filters(ta_uuid, 1, prefix="group__")
+            ta_uuids = MicroCatchmentTA.objects.filter(
+                micro_catchment__uuid=micro_catchment_uuid,
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).values_list("location__uuid", flat=True)
+            for ta_uuid in ta_uuids:
+                catchment_filter |= Query._get_location_filters(ta_uuid, 1, prefix="group__")
             filters.append(catchment_filter)
 
         parent_location = kwargs.get('parent_location')

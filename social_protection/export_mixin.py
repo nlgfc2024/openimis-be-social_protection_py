@@ -2,8 +2,8 @@ import json
 import logging
 import types
 from io import BytesIO
+from itertools import islice
 
-import pandas as pd
 from django.core.files.base import ContentFile
 
 from core.custom_filters import CustomFilterWizardStorage
@@ -18,6 +18,7 @@ ENROLMENT_EXPORT_COLUMNS = (
     "project_name", "target_HHs", "enrolled_HHs", "enrolment_date", "form_number",
     "full_name", "national_id", "date_of_birth", "relationship", "enrolment_type",
 )
+ENROLMENT_EXPORT_BATCH_SIZE = 500
 
 
 class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
@@ -37,11 +38,15 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
 
     @staticmethod
     def _enrolment_workbook(rows):
+        from openpyxl import Workbook
+
         content = BytesIO()
-        with pd.ExcelWriter(content, engine="openpyxl") as writer:
-            pd.DataFrame(rows, columns=ENROLMENT_EXPORT_COLUMNS).to_excel(
-                writer, sheet_name="Enrolments", index=False,
-            )
+        workbook = Workbook(write_only=True)
+        worksheet = workbook.create_sheet("Enrolments")
+        worksheet.append(ENROLMENT_EXPORT_COLUMNS)
+        for row in rows:
+            worksheet.append([row.get(column, "") for column in ENROLMENT_EXPORT_COLUMNS])
+        workbook.save(content)
         return content.getvalue()
 
     @classmethod
@@ -67,154 +72,159 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                 "project__activity", "project__benefit_plan",
             ),
         )
-        queryset = queryset.select_related(
-            f"{relation}__location__parent__parent__parent"
-        ).prefetch_related(enrolment_prefetch)
-        records = list(queryset)
-
-        record_locations = {}
-        record_location_ids = {"D": set(), "W": set()}
-        group_ids = set()
-        for record in records:
-            location = getattr(record, relation).location
-            if is_group_export:
-                group_ids.add(record.group_id)
-            current = location
-            while current:
-                if current.type in record_location_ids:
-                    record_location_ids[current.type].add(current.id)
-                current = getattr(current, "parent", None)
-            record_locations[record.id] = location
-
-        members_by_group = {}
-        archived_members_by_group = {}
-        if group_ids:
-            for member in GroupIndividual.objects.filter(
-                group_id__in=group_ids,
-                is_deleted=False,
-            ).select_related("individual"):
-                members_by_group.setdefault(member.group_id, []).append(member)
-            # Legacy imports can mark links deleted after the household was
-            # enrolled. They still hold the member role needed for reporting.
-            for member in GroupIndividual.objects.filter(
-                group_id__in=group_ids,
-                is_deleted=True,
-            ).select_related("individual").order_by("group_id", "individual_id", "-date_updated"):
-                archived_members_by_group.setdefault(member.group_id, {}) \
-                    .setdefault(member.individual_id, member)
-
-        # Older household imports may have lost their active GroupIndividual
-        # links while retaining member IDs in Group.json_ext. Keep those reports
-        # useful by resolving the saved IDs back to Individual records.
-        legacy_member_ids_by_group = {}
-        legacy_member_ids = set()
-        for record in records:
-            if not is_group_export:
-                continue
-            group_json = record.group.json_ext or {}
-            member_ids = list((group_json.get("members") or {}).keys())
-            legacy_member_ids_by_group[record.group_id] = member_ids
-            legacy_member_ids.update(member_ids)
-        legacy_individuals = {
-            str(individual_id): individual
-            for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
-        }
-
-        micro_catchments_by_location = {}
-        for link in MicroCatchmentGVH.objects.filter(
-            location_id__in=record_location_ids["W"],
-            validity_to__isnull=True,
-            micro_catchment__validity_to__isnull=True,
-        ).select_related("micro_catchment"):
-            micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
-        for link in MicroCatchmentTA.objects.filter(
-            location_id__in=record_location_ids["D"],
-            validity_to__isnull=True,
-            micro_catchment__validity_to__isnull=True,
-        ).select_related("micro_catchment"):
-            micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
-
+        prefetches = [enrolment_prefetch]
+        if is_group_export:
+            prefetches.append(Prefetch(
+                "group__groupindividuals",
+                queryset=GroupIndividual.objects.select_related("individual").order_by(
+                    "group_id", "individual_id", "-date_updated"
+                ),
+                to_attr="export_group_members",
+            ))
+        export_queryset = queryset
         enrolled_by_project = {
             row["project_id"]: row["count"]
-            for row in enrollment_model.objects.filter(is_deleted=False)
-            .values("project_id").annotate(count=Count("id"))
+            for row in enrollment_model.objects.filter(
+                is_deleted=False,
+                **{f"{relation}_beneficiary_id__in": export_queryset.order_by().values("pk")},
+            ).values("project_id").annotate(count=Count("id"))
         }
+        queryset = queryset.select_related(
+            f"{relation}__location__parent__parent__parent"
+        ).prefetch_related(*prefetches)
+        def build_rows(records):
+            record_locations = {}
+            record_location_ids = {"D": set(), "W": set()}
+            for record in records:
+                location = getattr(record, relation).location
+                current = location
+                while current:
+                    if current.type in record_location_ids:
+                        record_location_ids[current.type].add(current.id)
+                    current = getattr(current, "parent", None)
+                record_locations[record.id] = location
 
-        rows = []
-        for record in records:
-            district, ta, gvh, village = cls._location_columns(record_locations[record.id])
-            location_ids = {}
-            current = record_locations[record.id]
-            while current:
-                location_ids[current.type] = current.id
-                current = getattr(current, "parent", None)
-            micro_catchments = (
-                micro_catchments_by_location.get(location_ids.get("W"), [])
-                or micro_catchments_by_location.get(location_ids.get("D"), [])
-            )
-            identity = getattr(record, relation)
+            members_by_group = {}
+            archived_members_by_group = {}
             if is_group_export:
-                members = [
-                    (member.individual, member.role)
-                    for member in members_by_group.get(identity.id, [])
-                ]
-                if not members:
+                for record in records:
+                    for member in record.group.export_group_members:
+                        if not member.is_deleted:
+                            members_by_group.setdefault(member.group_id, []).append(member)
+                        else:
+                            archived_members_by_group.setdefault(member.group_id, {}) \
+                                .setdefault(member.individual_id, member)
+
+            # Older household imports may have lost their active GroupIndividual
+            # links while retaining member IDs in Group.json_ext. Keep those reports
+            # useful by resolving the saved IDs back to Individual records.
+            legacy_member_ids_by_group = {}
+            legacy_member_ids = set()
+            for record in records:
+                if not is_group_export:
+                    continue
+                group_json = record.group.json_ext or {}
+                member_ids = list((group_json.get("members") or {}).keys())
+                legacy_member_ids_by_group[record.group_id] = member_ids
+                legacy_member_ids.update(member_ids)
+            legacy_individuals = {
+                str(individual_id): individual
+                for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
+            }
+
+            micro_catchments_by_location = {}
+            for link in MicroCatchmentGVH.objects.filter(
+                location_id__in=record_location_ids["W"],
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).select_related("micro_catchment"):
+                micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
+            for link in MicroCatchmentTA.objects.filter(
+                location_id__in=record_location_ids["D"],
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).select_related("micro_catchment"):
+                micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
+
+            for record in records:
+                district, ta, gvh, village = cls._location_columns(record_locations[record.id])
+                location_ids = {}
+                current = record_locations[record.id]
+                while current:
+                    location_ids[current.type] = current.id
+                    current = getattr(current, "parent", None)
+                micro_catchments = (
+                    micro_catchments_by_location.get(location_ids.get("W"), [])
+                    + micro_catchments_by_location.get(location_ids.get("D"), [])
+                )
+                identity = getattr(record, relation)
+                if is_group_export:
                     members = [
                         (member.individual, member.role)
-                        for member in archived_members_by_group.get(identity.id, {}).values()
+                        for member in members_by_group.get(identity.id, [])
                     ]
-                if not members:
-                    head_id = str((identity.json_ext or {}).get("head_id") or "")
-                    members = [
-                        (
-                            legacy_individuals.get(member_id),
-                            "HEAD" if str(member_id) == head_id else "",
-                        )
-                        for member_id in legacy_member_ids_by_group.get(identity.id, [])
-                    ]
-            else:
-                members = [(identity, "")]
-            # Keep one row for an enrolled household without members, but otherwise
-            # export every attached member with the same household/project details.
-            members = members or [(None, "")]
-            enrolments = list(record.project_enrollments.all()) or [None]
-
-            for enrolment in enrolments:
-                project = enrolment.project if enrolment else None
-                project_json = getattr(project, "json_ext", {}) or {}
-                for person, relationship in members:
-                    record_json = record.json_ext or {}
-                    person_json = getattr(person, "json_ext", {}) or {}
-                    group_json = getattr(identity, "json_ext", {}) or {}
-                    rows.append({
-                        "district_name": district,
-                        "traditional_authority_name": ta,
-                        "catchment_name": "; ".join(micro_catchments),
-                        "group_village_head_name": gvh,
-                        "village_name": village,
-                        "Phase_Name": project.benefit_plan.name if project else "",
-                        "project_code": (
-                            project.code or project_json.get("project_code")
-                            or project_json.get("code", "")
-                        ) if project else "",
-                        "project_name": project.name if project else "",
-                        "target_HHs": project.target_beneficiaries if project else "",
-                        "enrolled_HHs": enrolled_by_project.get(project.id, "") if project else "",
-                        "enrolment_date": enrolment.date_created.date().isoformat() if enrolment and enrolment.date_created else "",
-                        "form_number": (
-                            get_household_form_number(identity, person) or identity.code
-                            if is_group_export else record_json.get(
-                                "form_number", person_json.get("form_number", "")
+                    if not members:
+                        members = [
+                            (member.individual, member.role)
+                            for member in archived_members_by_group.get(identity.id, {}).values()
+                        ]
+                    if not members:
+                        head_id = str((identity.json_ext or {}).get("head_id") or "")
+                        members = [
+                            (
+                                legacy_individuals.get(member_id),
+                                "HEAD" if str(member_id) == head_id else "",
                             )
-                        ),
-                        "full_name": f"{person.first_name} {person.last_name}".strip() if person else "",
-                        "national_id": person_json.get(
-                            "national_id", record_json.get("national_id", group_json.get("national_id", ""))
-                        ),
-                        "date_of_birth": person.dob.isoformat() if person and person.dob else "",
-                        "relationship": relationship,
-                        "enrolment_type": "Household" if is_group_export else "Individual",
-                    })
+                            for member_id in legacy_member_ids_by_group.get(identity.id, [])
+                        ]
+                else:
+                    members = [(identity, "")]
+                # Keep one row for an enrolled household without members, but otherwise
+                # export every attached member with the same household/project details.
+                members = members or [(None, "")]
+                enrolments = list(record.project_enrollments.all()) or [None]
+
+                for enrolment in enrolments:
+                    project = enrolment.project if enrolment else None
+                    project_json = getattr(project, "json_ext", {}) or {}
+                    for person, relationship in members:
+                        record_json = record.json_ext or {}
+                        person_json = getattr(person, "json_ext", {}) or {}
+                        group_json = getattr(identity, "json_ext", {}) or {}
+                        yield {
+                            "district_name": district,
+                            "traditional_authority_name": ta,
+                            "catchment_name": "; ".join(micro_catchments),
+                            "group_village_head_name": gvh,
+                            "village_name": village,
+                            "Phase_Name": project.benefit_plan.name if project else "",
+                            "project_code": (
+                                project.code or project_json.get("project_code")
+                                or project_json.get("code", "")
+                            ) if project else "",
+                            "project_name": project.name if project else "",
+                            "target_HHs": project.target_beneficiaries if project else "",
+                            "enrolled_HHs": enrolled_by_project.get(project.id, "") if project else "",
+                            "enrolment_date": enrolment.date_created.date().isoformat() if enrolment and enrolment.date_created else "",
+                            "form_number": (
+                                get_household_form_number(identity, person) or identity.code
+                                if is_group_export else record_json.get(
+                                    "form_number", person_json.get("form_number", "")
+                                )
+                            ),
+                            "full_name": f"{person.first_name} {person.last_name}".strip() if person else "",
+                            "national_id": person_json.get(
+                                "national_id", record_json.get("national_id", group_json.get("national_id", ""))
+                            ),
+                            "date_of_birth": person.dob.isoformat() if person and person.dob else "",
+                            "relationship": relationship,
+                            "enrolment_type": "Household" if is_group_export else "Individual",
+                        }
+
+        def rows():
+            records = queryset.iterator(chunk_size=ENROLMENT_EXPORT_BATCH_SIZE)
+            while batch := list(islice(records, ENROLMENT_EXPORT_BATCH_SIZE)):
+                yield from build_rows(batch)
 
         from core.models import ExportableQueryModel
         import uuid
@@ -222,7 +232,7 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
         export = ExportableQueryModel(
             name=filename,
             model=queryset.model.__name__,
-            content=ContentFile(cls._enrolment_workbook(rows), filename),
+            content=ContentFile(cls._enrolment_workbook(rows()), filename),
             user=user,
             sql_query=str(queryset.query),
             file_format="xlsx",
