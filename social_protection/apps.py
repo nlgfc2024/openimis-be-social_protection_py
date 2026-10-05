@@ -2,10 +2,12 @@ import copy
 import logging
 
 from django.apps import AppConfig
+from django.core.exceptions import ValidationError
 
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
 from core.module_config_registry import register_reloader, register_validator
+from social_protection.program_policies import validate_program_specific_enrolment_criteria
 from social_protection.phase_defaults import (
     validate_benefit_plan_creation_defaults,
     validate_mandatory_enrollment_criteria,
@@ -40,6 +42,24 @@ DEFAULT_CONFIG = {
     "mandatory_enrollment_criteria": {
         "INDIVIDUAL": {},
         "GROUP": {},
+    },
+    "use_program_specific_enrolment_criteria": False,
+    "program_specific_enrolment_criteria": {
+        "PWP": {
+            "selection_criteria": {
+                "data_source": "PWP",
+                "fit_for_work": 1,
+                "validation_status": "VERIFIED",
+                "primary_worker": True,
+                "selection_strategy": {
+                    "female_headed": 40,
+                    "youth_headed": 40,
+                    "female_value": "famale",
+                    "youth_min_age": 18,
+                    "youth_max_age": 35
+                }
+            }
+        }
     },
     # Activity/project rights (208001, 209001–209006) now belong to
     # project_social_protection; removed here to avoid dual ownership. The seeding
@@ -105,6 +125,8 @@ class SocialProtectionConfig(AppConfig):
     gql_benefit_plan_criteria_update_perms = None
     benefit_plan_creation_defaults = None
     mandatory_enrollment_criteria = None
+    use_program_specific_enrolment_criteria = None
+    program_specific_enrolment_criteria = None
 
     gql_check_benefit_plan_update = None
     gql_check_beneficiary_crud = None
@@ -232,6 +254,13 @@ class SocialProtectionConfig(AppConfig):
         )
         validate_mandatory_enrollment_criteria(
             cfg.get("mandatory_enrollment_criteria", {})
+        )
+        if not isinstance(cfg.get("use_program_specific_enrolment_criteria"), bool):
+            raise ValidationError(
+                "use_program_specific_enrolment_criteria must be a boolean."
+            )
+        validate_program_specific_enrolment_criteria(
+            cfg.get("program_specific_enrolment_criteria", {})
         )
 
     def __register_masking_class(cls):

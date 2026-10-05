@@ -1,7 +1,9 @@
 import json
+from copy import deepcopy
 
 import graphene
 from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import ValidationError
 from django.db.models import Q
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
@@ -21,6 +23,7 @@ from social_protection.models import (
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
 )
+from social_protection.program_policies import runtime_policy_criteria
 
 
 def _have_permissions(user, permission):
@@ -29,6 +32,48 @@ def _have_permissions(user, permission):
     if not user.id:
         return False
     return user.has_perms(permission)
+
+
+def _effective_advanced_criteria(benefit_plan):
+    """Return saved and configured criteria as displayed during enrolment."""
+    json_ext = benefit_plan.json_ext or {}
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, json.JSONDecodeError):
+            json_ext = {}
+    if not isinstance(json_ext, dict):
+        json_ext = {}
+
+    saved = json_ext.get("advanced_criteria", {}) or {}
+    if isinstance(saved, list):
+        saved = {"POTENTIAL": saved}
+    if not isinstance(saved, dict):
+        saved = {}
+
+    configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
+    mandatory = configured.get(getattr(benefit_plan, "type", None), {}) or {}
+    statuses = set(saved) | set(mandatory) | {"ACTIVE"}
+    effective = {}
+    for status in statuses:
+        try:
+            runtime = runtime_policy_criteria(benefit_plan, status)
+        except ValidationError:
+            # Benefit Plan searches include plans unrelated to enrolment. Missing
+            # programme policies must only block an actual enrolment operation,
+            # where resolve_program_policy is called authoritatively.
+            runtime = []
+        combined = []
+        for criterion in (
+            list(mandatory.get(status, []) or [])
+            + runtime
+            + list(saved.get(status, []) or [])
+        ):
+            if criterion not in combined:
+                combined.append(deepcopy(criterion))
+        if combined or status in saved:
+            effective[status] = combined
+    return effective
 
 
 class JsonExtMixin:
@@ -105,15 +150,7 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     def resolve_advanced_criteria(self, info):
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
-            json_ext = self.json_ext or {}
-            if isinstance(json_ext, str):
-                try:
-                    json_ext = json.loads(json_ext)
-                except (TypeError, json.JSONDecodeError):
-                    return {}
-            if isinstance(json_ext, dict):
-                return json_ext.get("advanced_criteria", {})
-            return {}
+            return _effective_advanced_criteria(self)
         return None
 
     def resolve_enrolment_ranking(self, info):
