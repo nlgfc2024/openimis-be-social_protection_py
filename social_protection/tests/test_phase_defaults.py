@@ -181,6 +181,82 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
             "GROUP": {},
         })
 
+    def test_accepts_primary_worker_weighted_ranking(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {},
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "beneficiary_data_schema": {
+                    "properties": {
+                        "business_period": {"type": "number"},
+                    }
+                },
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "score_source": {
+                                "type": "PRIMARY_WORKER",
+                                "data_field": "individual.json_ext",
+                            },
+                            "weighted_score": {
+                                "normalise_to": 100,
+                                "components": [{
+                                    "field": "business_period",
+                                    "weight": 100,
+                                    "scoring": {
+                                        "type": "numeric_bands",
+                                        "bands": [
+                                            {"min": 0, "max": 2, "points": 1},
+                                            {"min": 3, "points": 5},
+                                        ],
+                                        "maximum_points": 5,
+                                    },
+                                }],
+                            },
+                            "order_by": [{
+                                "field": "_weighted_score",
+                                "direction": "desc",
+                            }],
+                            "tie_breaker": "id",
+                        }
+                    }
+                },
+            },
+        })
+
+    def test_rejects_weighted_field_missing_from_schema(self):
+        with self.assertRaisesMessage(ValidationError, "not defined"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {},
+                "GROUP": {
+                    "beneficiary_data_schema": {
+                        "properties": {"known_field": {"type": "string"}}
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "ACTIVE": {
+                                "score_source": {
+                                    "type": "PRIMARY_WORKER",
+                                    "data_field": "individual.json_ext",
+                                },
+                                "weighted_score": {
+                                    "components": [{
+                                        "field": "unknown_business_field",
+                                        "weight": 100,
+                                        "scoring": {
+                                            "type": "mapping",
+                                            "values": {"Yes": 1},
+                                        },
+                                    }],
+                                },
+                                "order_by": ["-_weighted_score"],
+                            }
+                        }
+                    },
+                },
+            })
+
     def test_rejects_invalid_enrolment_ranking_configuration(self):
         with self.assertRaisesMessage(ValidationError, "between 1 and 100"):
             validate_benefit_plan_creation_defaults({

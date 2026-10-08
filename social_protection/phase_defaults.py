@@ -136,6 +136,21 @@ def advanced_criteria_validation_errors(
     return errors
 
 
+def enrolment_ranking_validation_errors(
+    rankings,
+    schema=None,
+    benefit_plan_type="INDIVIDUAL",
+):
+    errors = []
+    _validate_enrolment_ranking(
+        benefit_plan_type,
+        rankings,
+        schema or {},
+        errors,
+    )
+    return errors
+
+
 def _validate_merged_defaults(benefit_plan_type, defaults, errors):
     schema = defaults.get("beneficiary_data_schema")
     if schema is not None:
@@ -222,11 +237,40 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
         if not isinstance(ranking, dict):
             errors.append(f"{status_prefix} must be an object.")
             continue
-        unexpected = set(ranking) - {"order_by", "tie_breaker", "limit"}
+        unexpected = set(ranking) - {
+            "order_by",
+            "tie_breaker",
+            "limit",
+            "score_source",
+            "weighted_score",
+        }
         if unexpected:
             errors.append(
                 f"{status_prefix} has unsupported keys: {', '.join(sorted(unexpected))}."
             )
+        from individual.enrolment_ranking import validate_ranking_spec
+        try:
+            validate_ranking_spec(ranking, ranking_model)
+        except ValidationError as exc:
+            errors.extend(
+                f"{status_prefix}: {message}"
+                for message in exc.messages
+            )
+
+        weighted_score = ranking.get("weighted_score")
+        if isinstance(weighted_score, dict):
+            properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+            components = weighted_score.get("components", [])
+            if isinstance(components, list):
+                for index, component in enumerate(components):
+                    if not isinstance(component, dict):
+                        continue
+                    field = component.get("field")
+                    if properties and field not in properties:
+                        errors.append(
+                            f"{status_prefix}.weighted_score.components[{index}].field "
+                            f"{field} is not defined in the beneficiary schema."
+                        )
         order_by = ranking.get("order_by", [])
         if not isinstance(order_by, list):
             errors.append(f"{status_prefix}.order_by must be a list.")
@@ -236,7 +280,11 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
                 if isinstance(item, str):
                     if not item or item == "-":
                         errors.append(f"{item_prefix} must name a field.")
-                    elif not _ranking_model_path_exists(ranking_model, item):
+                    elif not _ranking_model_path_exists(
+                        ranking_model,
+                        item,
+                        weighted_score is not None,
+                    ):
                         errors.append(f"{item_prefix} field {item} is unsupported.")
                     continue
                 if not isinstance(item, dict):
@@ -250,7 +298,11 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
                     )
                 if not isinstance(item.get("field"), str) or not item.get("field"):
                     errors.append(f"{item_prefix}.field must be a non-empty string.")
-                elif not _ranking_model_path_exists(ranking_model, item["field"]):
+                elif not _ranking_model_path_exists(
+                    ranking_model,
+                    item["field"],
+                    weighted_score is not None,
+                ):
                     errors.append(f"{item_prefix}.field {item['field']} is unsupported.")
                 if item.get("direction", "asc") not in {"asc", "desc"}:
                     errors.append(f"{item_prefix}.direction must be asc or desc.")
@@ -328,7 +380,9 @@ def _validate_ranking_cast(prefix, path, cast, schema, errors):
         )
 
 
-def _ranking_model_path_exists(model, path):
+def _ranking_model_path_exists(model, path, weighted_score=False):
+    if weighted_score and path.lstrip("-") == "_weighted_score":
+        return True
     parts = path.lstrip("-").split("__")
     current_model = model
     for index, part in enumerate(parts):
