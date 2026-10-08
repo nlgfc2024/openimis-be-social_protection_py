@@ -222,7 +222,13 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
         if not isinstance(ranking, dict):
             errors.append(f"{status_prefix} must be an object.")
             continue
-        unexpected = set(ranking) - {"order_by", "tie_breaker", "limit"}
+        unexpected = set(ranking) - {
+            "order_by",
+            "tie_breaker",
+            "limit",
+            "score_source",
+            "weighted_score",
+        }
         if unexpected:
             errors.append(
                 f"{status_prefix} has unsupported keys: {', '.join(sorted(unexpected))}."
@@ -236,7 +242,10 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
                 if isinstance(item, str):
                     if not item or item == "-":
                         errors.append(f"{item_prefix} must name a field.")
-                    elif not _ranking_model_path_exists(ranking_model, item):
+                    elif (
+                        item.lstrip("-") != "_weighted_score"
+                        or "weighted_score" not in ranking
+                    ) and not _ranking_model_path_exists(ranking_model, item):
                         errors.append(f"{item_prefix} field {item} is unsupported.")
                     continue
                 if not isinstance(item, dict):
@@ -250,7 +259,10 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
                     )
                 if not isinstance(item.get("field"), str) or not item.get("field"):
                     errors.append(f"{item_prefix}.field must be a non-empty string.")
-                elif not _ranking_model_path_exists(ranking_model, item["field"]):
+                elif (
+                    item["field"] != "_weighted_score"
+                    or "weighted_score" not in ranking
+                ) and not _ranking_model_path_exists(ranking_model, item["field"]):
                     errors.append(f"{item_prefix}.field {item['field']} is unsupported.")
                 if item.get("direction", "asc") not in {"asc", "desc"}:
                     errors.append(f"{item_prefix}.direction must be asc or desc.")
@@ -293,6 +305,13 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
             errors.append(
                 f"{status_prefix}.limit.respect_max_beneficiaries must be boolean."
             )
+        if "weighted_score" in ranking or "score_source" in ranking:
+            from social_protection.enrolment_ranking import validate_ranking_spec
+
+            try:
+                validate_ranking_spec(ranking, ranking_model)
+            except ValidationError as exc:
+                errors.extend(exc.messages)
 
 
 def _validate_ranking_cast(prefix, path, cast, schema, errors):

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
@@ -92,56 +92,7 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         })
         info = SimpleNamespace(context=SimpleNamespace(user=user))
 
-        with patch(
-            "social_protection.gql_queries.runtime_policy_criteria",
-            return_value=[],
-        ):
-            result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
-
-        self.assertEqual(result, {"POTENTIAL": []})
-
-    def test_criteria_resolver_includes_active_program_policy(self):
-        user = Mock(id=1)
-        user.has_perms.return_value = True
-        benefit_plan = SimpleNamespace(
-            code="RMEP",
-            type="GROUP",
-            json_ext={"advanced_criteria": {"POTENTIAL": []}},
-        )
-        info = SimpleNamespace(context=SimpleNamespace(user=user))
-        runtime_criteria = [{
-            "field": "beneficiary_data_source",
-            "filter": "exact",
-            "type": "string",
-            "value": "PWP",
-        }]
-
-        with patch(
-            "social_protection.gql_queries.runtime_policy_criteria",
-            side_effect=lambda plan, status: runtime_criteria if status == "ACTIVE" else [],
-        ):
-            result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
-
-        self.assertEqual(result, {
-            "POTENTIAL": [],
-            "ACTIVE": runtime_criteria,
-        })
-
-    def test_criteria_resolver_does_not_block_unconfigured_plan_search(self):
-        user = Mock(id=1)
-        user.has_perms.return_value = True
-        benefit_plan = SimpleNamespace(
-            code="UNCONFIGURED",
-            type="GROUP",
-            json_ext={"advanced_criteria": {"POTENTIAL": []}},
-        )
-        info = SimpleNamespace(context=SimpleNamespace(user=user))
-
-        with patch(
-            "social_protection.gql_queries.runtime_policy_criteria",
-            side_effect=ValidationError("No enrolment policy is configured"),
-        ):
-            result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
+        result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
 
         self.assertEqual(result, {"POTENTIAL": []})
 

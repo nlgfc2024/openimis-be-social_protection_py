@@ -255,6 +255,36 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                 "GROUP": {},
             })
 
+    def test_primary_worker_score_fields_do_not_use_group_plan_schema(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {},
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "beneficiary_data_schema": {"properties": {}},
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "score_source": {
+                                "type": "PRIMARY_WORKER",
+                                "data_field": "individual.json_ext",
+                            },
+                            "weighted_score": {
+                                "components": [{
+                                    "field": "business_experience",
+                                    "weight": 100,
+                                    "scoring": {
+                                        "type": "mapping",
+                                        "values": {"Yes": 1},
+                                    },
+                                }],
+                            },
+                            "order_by": ["-_weighted_score"],
+                        }
+                    }
+                },
+            },
+        })
+
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):

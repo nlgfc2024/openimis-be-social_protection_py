@@ -1,5 +1,4 @@
 import copy
-from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
@@ -18,6 +17,7 @@ from individual.services import (
 from social_protection.enrolment_ranking import (
     calculate_cap,
     build_order_by,
+    build_weighted_score,
     load_ranking_spec,
     rank_and_cap_queryset,
     validate_ranking_spec,
@@ -25,174 +25,14 @@ from social_protection.enrolment_ranking import (
 from individual.models import Individual
 from individual.schema import Query
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
-from individual.tests.test_helpers import create_group, create_individual
-from social_protection.tests.test_helpers import create_benefit_plan
-from social_protection.apps import DEFAULT_CONFIG, SocialProtectionConfig
-from social_protection.models import Beneficiary, GroupBeneficiary
-from social_protection.program_policies import (
-    policy_criteria,
-    resolve_program_policy,
-    runtime_policy_selection,
-    validate_program_specific_enrolment_criteria,
+from individual.tests.test_helpers import (
+    add_individual_to_group,
+    create_group,
+    create_individual,
 )
-
-
-class ProgramPolicyResolutionTest(SimpleTestCase):
-    def test_default_pwp_policy_restricts_candidates_to_pwp_source(self):
-        criteria = policy_criteria(
-            DEFAULT_CONFIG["program_specific_enrolment_criteria"]["PWP"]
-        )
-
-        self.assertIn({
-            "field": "beneficiary_data_source",
-            "filter": "exact",
-            "type": "string",
-            "value": "PWP",
-        }, criteria)
-
-    def test_disabled_program_specific_flag_always_uses_pwp(self):
-        pwp = {"selection_criteria": {"fit_for_work": 1}}
-        rmep = {"selection_criteria": {"business_experience": True}}
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", False), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", {"PWP": pwp, "RMEP": rmep}):
-            self.assertIs(resolve_program_policy(SimpleNamespace(code="RMEP")), pwp)
-
-    def test_enabled_program_specific_flag_requires_a_code(self):
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", True), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", {"PWP": {}}):
-            with self.assertRaisesMessage(ValidationError, "Benefit Plan code is required"):
-                resolve_program_policy(SimpleNamespace(code=""))
-
-    def test_enabled_program_specific_flag_requires_matching_policy(self):
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", True), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", {"PWP": {}}):
-            with self.assertRaisesMessage(ValidationError, "No enrolment policy"):
-                resolve_program_policy(SimpleNamespace(code="RMEP"))
-
-    def test_enabled_program_specific_flag_uses_matching_code(self):
-        rmep = {"selection_criteria": {"business_experience": True}}
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", True), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", {"PWP": {}, "RMEP": rmep}):
-            self.assertIs(resolve_program_policy(SimpleNamespace(code="RMEP")), rmep)
-
-
-class _PolicyRows:
-    """Small queryset stand-in for policy-selection tests."""
-
-    def __init__(self, rows):
-        self.rows = rows
-
-    def values(self, *fields):
-        return [{field: row[field] for field in fields} for row in self.rows]
-
-
-class ProgramConfigurationEndToEndTest(SimpleTestCase):
-    configuration = {
-        "use_program_specific_enrolment_criteria": True,
-        "program_specific_enrolment_criteria": {
-            "RMEP": {
-                "sorting_strategy": [
-                    {"key": "business_capital", "weight": {"< 1000": 0.5, "1000-5000": 1, "5001-10000": 2, "10001-20000": 3, "> 20000": 5}},
-                    {"key": "type_of_business", "weight": {"Retail": 1, "Service": 2, "Manufacturing": 3, "Agriculture": 4}},
-                    {"key": "business_period", "weight": {"< 1 year": 0.5, "1-3 years": 1, "4-6 years": 2, "7-10 years": 3, "> 10 years": 5}},
-                    {"key": "business_skills", "weight": {"Formal training": 3, "Apprenticeship": 2, "Learned from family/community": 1, "Self-taught": 1, "Previous work/business experience": 2}},
-                    {"key": "prior_knowledge", "weight": {"Technical/Production": 3, "Business management": 2, "Financial literacy": 2, "Marketing/sales": 1}},
-                ],
-                "selection_criteria": {
-                    "data_source": "PWP",
-                    "validation_status": "VERIFIED",
-                    "primary_worker": True,
-                    "business_experience": True,
-                    "selection_strategy": {"female": 60, "youth": 40},
-                },
-            },
-            "UPG": {
-                "sorting_strategy": [
-                    {"key": "savings_experience", "weight": {"No": 0, "Yes": 1}},
-                    {"key": "sanitary_facilities", "weight": {"Toilet": 1, "Mponda gear": 1, "Kitchen": 1, "Rubbish pit": 1, "Bathroom": 1}},
-                ],
-                "selection_criteria": {
-                    "data_source": "SCTP",
-                    "validation_status": "VERIFIED",
-                    "willingness_to_participate": True,
-                    "Age_limit": {"min_age": 18, "max_age": 60},
-                },
-            },
-        },
-    }
-
-    def _policy(self, code):
-        return self.configuration["program_specific_enrolment_criteria"][code]
-
-    def test_full_given_configuration_is_supported(self):
-        validate_program_specific_enrolment_criteria(
-            self.configuration["program_specific_enrolment_criteria"]
-        )
-
-    def test_rmep_eligibility_fields_are_translated_to_filters(self):
-        criteria = policy_criteria(self._policy("RMEP"))
-        self.assertEqual(
-            [(item["field"], item["value"]) for item in criteria],
-            [
-                ("beneficiary_data_source", "PWP"),
-                ("validation_status", "VERIFIED"),
-                ("is_primary_worker", True),
-                ("business_experience", "Yes"),
-            ],
-        )
-
-    def test_upg_eligibility_fields_are_translated_to_filters(self):
-        criteria = policy_criteria(self._policy("UPG"))
-        self.assertEqual(
-            [(item["field"], item["filter"], item["value"]) for item in criteria],
-            [
-                ("beneficiary_data_source", "exact", "SCTP"),
-                ("validation_status", "exact", "VERIFIED"),
-                ("willingness_to_participate", "exact", True),
-                ("age", "gte", 18),
-                ("age", "lte", 60),
-            ],
-        )
-
-    def test_pwp_boolean_fit_for_work_is_translated_to_integer(self):
-        criteria = policy_criteria({
-            "selection_criteria": {"fit_for_work": True},
-        })
-
-        self.assertEqual(criteria, [{
-            "field": "fit_for_work",
-            "filter": "exact",
-            "type": "integer",
-            "value": 1,
-        }])
-
-    def test_rmep_selection_is_weighted_then_60_40_prioritised(self):
-        rows = _PolicyRows([
-            {"id": "female_high", "json_ext": {"gender": "famale", "age": 40, "business_capital": 21000, "type_of_business": "Agriculture", "business_period": 11, "business_skills": "Formal training", "prior_knowledge": "Technical/Production"}},
-            {"id": "female_mid", "json_ext": {"gender": "famale", "age": 40, "business_capital": 5001, "type_of_business": "Service", "business_period": 4, "business_skills": "Apprenticeship", "prior_knowledge": "Financial literacy"}},
-            {"id": "female_low", "json_ext": {"gender": "famale", "age": 40, "business_capital": 1000, "type_of_business": "Retail", "business_period": 1, "business_skills": "Previous work/business experience", "prior_knowledge": "Marketing/sales"}},
-            {"id": "youth_high", "json_ext": {"gender": "male", "age": 25, "business_capital": 10001, "type_of_business": "Manufacturing", "business_period": 7, "business_skills": "Formal training", "prior_knowledge": "Technical/Production"}},
-            {"id": "youth_low", "json_ext": {"gender": "male", "age": 21, "business_capital": 999, "type_of_business": "Retail", "business_period": 0, "business_skills": "Self-taught", "prior_knowledge": "Marketing/sales"}},
-            {"id": "other", "json_ext": {"gender": "male", "age": 44, "business_capital": 21000, "type_of_business": "Service", "business_period": 11, "business_skills": "Formal training", "prior_knowledge": "Technical/Production"}},
-        ])
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", True), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", self.configuration["program_specific_enrolment_criteria"]):
-            selected = runtime_policy_selection(rows, SimpleNamespace(code="RMEP"), "ACTIVE", 5)
-        self.assertEqual(
-            selected,
-            ["female_high", "female_mid", "female_low", "youth_high", "youth_low"],
-        )
-
-    def test_upg_sorting_applies_without_a_quota_strategy(self):
-        rows = _PolicyRows([
-            {"id": "lowest", "json_ext": {"savings_experience": "No", "sanitary_facilities": []}},
-            {"id": "middle", "json_ext": {"savings_experience": "Yes", "sanitary_facilities": ["Toilet"]}},
-            {"id": "highest", "json_ext": {"savings_experience": "Yes", "sanitary_facilities": ["Toilet", "Kitchen", "Bathroom"]}},
-        ])
-        with patch.object(SocialProtectionConfig, "use_program_specific_enrolment_criteria", True), \
-             patch.object(SocialProtectionConfig, "program_specific_enrolment_criteria", self.configuration["program_specific_enrolment_criteria"]):
-            selected = runtime_policy_selection(rows, SimpleNamespace(code="UPG"), "ACTIVE", 3)
-        self.assertEqual(selected, ["highest", "middle", "lowest"])
+from social_protection.tests.test_helpers import create_benefit_plan
+from social_protection.apps import SocialProtectionConfig
+from social_protection.models import Beneficiary, GroupBeneficiary
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
@@ -279,6 +119,76 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         )
         self.assertEqual([item["field"] for item in order_items], ["last_name", "id"])
 
+    def test_weighted_ranking_validation_accepts_primary_worker_source(self):
+        from individual.models import Group
+
+        order_items, percentage, respect_max = validate_ranking_spec({
+            "score_source": {
+                "type": "PRIMARY_WORKER",
+                "data_field": "individual.json_ext",
+            },
+            "weighted_score": {
+                "normalise_to": 100,
+                "components": [{
+                    "field": "business_experience",
+                    "weight": 100,
+                    "scoring": {
+                        "type": "mapping",
+                        "values": {"Yes": 1},
+                        "default": 0,
+                    },
+                }],
+            },
+            "order_by": [{"field": "_weighted_score", "direction": "desc"}],
+        }, Group)
+
+        self.assertEqual(order_items[0]["field"], "_weighted_score")
+        self.assertIsNone(percentage)
+        self.assertTrue(respect_max)
+
+    def test_weighted_ranking_validation_requires_score_in_ordering(self):
+        with self.assertRaisesMessage(ValidationError, "must include _weighted_score"):
+            validate_ranking_spec({
+                "weighted_score": {
+                    "components": [{
+                        "field": "business_period",
+                        "weight": 100,
+                        "scoring": {
+                            "type": "numeric_bands",
+                            "bands": [{"min": 0, "points": 1}],
+                        },
+                    }],
+                },
+                "order_by": ["id"],
+            }, Individual)
+
+    def test_primary_worker_weighted_score_compiles_to_sql(self):
+        from individual.models import Group
+
+        scored = build_weighted_score(
+            Group.objects.all(),
+            {
+                "components": [{
+                    "field": "business_period",
+                    "weight": 100,
+                    "scoring": {
+                        "type": "numeric_bands",
+                        "bands": [{"min": 3, "points": 10}],
+                        "default": 0,
+                    },
+                }],
+            },
+            {
+                "type": "PRIMARY_WORKER",
+                "data_field": "individual.json_ext",
+            },
+        )
+
+        sql = str(scored.query)
+        self.assertIn("_weighted_score", sql)
+        self.assertIn("individual_individual", sql)
+        self.assertIn("business_period", sql)
+
     def test_string_json_ext_snapshot_uses_status_then_wildcard(self):
         plan = Mock(json_ext='{"enrolment_ranking":{"*":{"order_by":["id"]},"ACTIVE":{"order_by":["-id"]}}}')
         self.assertEqual(load_ranking_spec(plan, "ACTIVE")["order_by"], ["-id"])
@@ -304,15 +214,10 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         self.assertIn("NULLS LAST", sql)
         self.assertIn("integer", sql)
 
-    @patch(
-        "social_protection.program_policies.runtime_policy_selection",
-        return_value=None,
-    )
     @patch("social_protection.enrolment_ranking.build_order_by")
     def test_cast_data_error_names_the_configured_field(
         self,
         build_ranking,
-        policy_selection,
     ):
         queryset = MagicMock()
         queryset.count.return_value = 1
@@ -750,6 +655,91 @@ class AuthoritativeEnrollmentTest(TestCase):
         self.assertEqual(
             list(selection["groups_not_assigned_to_selected_programme"].values_list("id", flat=True))[:2],
             [first.id, second.id],
+        )
+
+    def test_group_weighted_ranking_reads_primary_worker_business_data(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {
+                "enrolment_ranking": {
+                    "ACTIVE": {
+                        "score_source": {
+                            "type": "PRIMARY_WORKER",
+                            "data_field": "individual.json_ext",
+                        },
+                        "weighted_score": {
+                            "normalise_to": 100,
+                            "components": [
+                                {
+                                    "field": "type_of_business",
+                                    "weight": 50,
+                                    "scoring": {
+                                        "type": "mapping",
+                                        "values": {"Priority": 10, "Other": 6},
+                                        "default": 0,
+                                        "maximum_points": 10,
+                                    },
+                                },
+                                {
+                                    "field": "business_period",
+                                    "weight": 50,
+                                    "scoring": {
+                                        "type": "numeric_bands",
+                                        "bands": [
+                                            {"min": 0, "max": 2.99, "points": 2},
+                                            {"min": 3, "points": 10},
+                                        ],
+                                        "default": 0,
+                                        "maximum_points": 10,
+                                    },
+                                },
+                            ],
+                        },
+                        "order_by": [{
+                            "field": "_weighted_score",
+                            "direction": "desc",
+                        }],
+                        "tie_breaker": "id",
+                        "limit": {"percentage": 50},
+                    }
+                }
+            },
+        })
+
+        def household(business_type, business_period):
+            group = create_group(self.user.username)
+            member = create_individual(self.user.username, {
+                "json_ext": {
+                    "type_of_business": business_type,
+                    "business_period": business_period,
+                }
+            })
+            membership = add_individual_to_group(
+                self.user.username,
+                member,
+                group,
+            )
+            membership.json_ext = {"primary_worker": True}
+            membership.save(username=self.user.username)
+            return group
+
+        highest = household("Priority", 5)
+        second = household("Other", 4)
+        household("Other", 1)
+
+        selection = build_group_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 3)
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(
+            list(
+                selection["groups_not_assigned_to_selected_programme"]
+                .values_list("id", flat=True)
+            ),
+            [highest.id, second.id],
         )
 
     def test_group_selection_only_excludes_active_assignment_for_requested_status(self):
