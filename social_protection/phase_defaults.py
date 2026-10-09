@@ -228,6 +228,7 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
             "limit",
             "score_source",
             "weighted_score",
+            "selection_strategy",
         }
         if unexpected:
             errors.append(
@@ -305,7 +306,14 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
             errors.append(
                 f"{status_prefix}.limit.respect_max_beneficiaries must be boolean."
             )
-        if "weighted_score" in ranking or "score_source" in ranking:
+        if any(
+            key in ranking
+            for key in (
+                "weighted_score",
+                "score_source",
+                "selection_strategy",
+            )
+        ):
             from social_protection.enrolment_ranking import validate_ranking_spec
 
             try:

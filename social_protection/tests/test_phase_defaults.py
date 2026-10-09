@@ -285,6 +285,30 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
             },
         })
 
+    def test_accepts_phase_level_household_quota_strategy(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {},
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "order_by": ["id"],
+                            "limit": {"percentage": 25},
+                            "selection_strategy": {
+                                "source": "HOUSEHOLD_HEAD",
+                                "female_percentage": 40,
+                                "youth_percentage": 40,
+                                "female_value": "Female",
+                                "youth_min_age": 18,
+                                "youth_max_age": 35,
+                            },
+                        }
+                    }
+                },
+            },
+        })
+
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
@@ -10,6 +10,7 @@ from social_protection.gql_mutations import (
     preserve_hidden_json_ext,
 )
 from social_protection.gql_queries import BenefitPlanGQLType
+from social_protection.apps import SocialProtectionConfig
 
 
 class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
@@ -95,6 +96,57 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
 
         self.assertEqual(result, {"POTENTIAL": []})
+
+    def test_effective_criteria_are_exposed_separately(self):
+        user = Mock(id=1)
+        user.has_perms.return_value = True
+        saved = {
+            "ACTIVE": [{"field": "district", "value": "North"}],
+        }
+        mandatory = {
+            "ACTIVE": [{"field": "validation_status", "value": "VERIFIED"}],
+        }
+        benefit_plan = SimpleNamespace(
+            type="GROUP",
+            json_ext={"advanced_criteria": saved},
+        )
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        with patch.object(
+            SocialProtectionConfig,
+            "mandatory_enrollment_criteria",
+            {"GROUP": mandatory},
+        ):
+            effective = (
+                BenefitPlanGQLType.resolve_effective_advanced_criteria(
+                    benefit_plan,
+                    info,
+                )
+            )
+
+        self.assertEqual(
+            BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info),
+            saved,
+        )
+        self.assertEqual(
+            effective,
+            {"ACTIVE": mandatory["ACTIVE"] + saved["ACTIVE"]},
+        )
+
+    def test_saved_legacy_criteria_shape_is_not_changed(self):
+        user = Mock(id=1)
+        user.has_perms.return_value = True
+        saved = [{"field": "district", "value": "North"}]
+        benefit_plan = SimpleNamespace(
+            type="GROUP",
+            json_ext={"advanced_criteria": saved},
+        )
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        self.assertEqual(
+            BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info),
+            saved,
+        )
 
     def test_criteria_resolver_hides_criteria_without_permission(self):
         user = Mock(id=1)

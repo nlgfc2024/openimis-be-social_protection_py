@@ -1,5 +1,6 @@
 import json
 import math
+from datetime import timedelta
 
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import DataError
@@ -18,6 +19,7 @@ from django.db.models import (
 )
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
+from django.utils import timezone
 
 
 SUPPORTED_CASTS = {
@@ -30,6 +32,8 @@ SUPPORTED_DIRECTIONS = {"asc", "desc"}
 SUPPORTED_NULLS = {"first", "last"}
 WEIGHTED_SCORE_FIELD = "_weighted_score"
 PRIMARY_WORKER_SOURCE = "PRIMARY_WORKER"
+HOUSEHOLD_HEAD_SOURCE = "HOUSEHOLD_HEAD"
+SELF_SOURCE = "SELF"
 
 
 def load_ranking_spec(benefit_plan, status):
@@ -267,6 +271,91 @@ def _validate_weighted_score(weighted_score):
         _validate_scoring(component.get("scoring"), f"{path}.scoring")
 
 
+def _normalise_selection_strategy(selection_strategy, model):
+    if not isinstance(selection_strategy, dict):
+        raise ValidationError(
+            "enrolment_ranking.selection_strategy must be an object."
+        )
+    allowed = {
+        "source",
+        "female_percentage",
+        "youth_percentage",
+        "female_value",
+        "youth_min_age",
+        "youth_max_age",
+    }
+    unexpected = set(selection_strategy) - allowed
+    if unexpected:
+        raise ValidationError(
+            "Unsupported enrolment_ranking.selection_strategy keys: "
+            + ", ".join(sorted(unexpected))
+        )
+
+    source = selection_strategy.get("source")
+    if model._meta.model_name == "individual":
+        if source != SELF_SOURCE:
+            raise ValidationError(
+                "INDIVIDUAL selection_strategy.source must be SELF."
+            )
+    elif source not in {HOUSEHOLD_HEAD_SOURCE, PRIMARY_WORKER_SOURCE}:
+        raise ValidationError(
+            "GROUP selection_strategy.source must be HOUSEHOLD_HEAD or "
+            "PRIMARY_WORKER."
+        )
+
+    female = selection_strategy.get("female_percentage", 0)
+    youth = selection_strategy.get("youth_percentage", 0)
+    for key, value in (
+        ("female_percentage", female),
+        ("youth_percentage", youth),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0 <= value <= 100
+        ):
+            raise ValidationError(
+                f"enrolment_ranking.selection_strategy.{key} must be "
+                "between 0 and 100."
+            )
+    if female + youth > 100:
+        raise ValidationError(
+            "enrolment_ranking.selection_strategy percentages cannot exceed 100."
+        )
+    if female == 0 and youth == 0:
+        raise ValidationError(
+            "enrolment_ranking.selection_strategy must configure a non-zero quota."
+        )
+
+    female_value = selection_strategy.get("female_value", "Female")
+    if not isinstance(female_value, str) or not female_value.strip():
+        raise ValidationError(
+            "enrolment_ranking.selection_strategy.female_value must be a "
+            "non-empty string."
+        )
+
+    youth_min = selection_strategy.get("youth_min_age", 18)
+    youth_max = selection_strategy.get("youth_max_age", 35)
+    if (
+        type(youth_min) is not int
+        or type(youth_max) is not int
+        or not 0 <= youth_min <= youth_max <= 120
+    ):
+        raise ValidationError(
+            "enrolment_ranking.selection_strategy youth ages must be integers "
+            "with 0 <= minimum <= maximum <= 120."
+        )
+
+    return {
+        "source": source,
+        "female_percentage": female,
+        "youth_percentage": youth,
+        "female_value": female_value,
+        "youth_min_age": youth_min,
+        "youth_max_age": youth_max,
+    }
+
+
 def validate_ranking_spec(ranking, model):
     unexpected = set(ranking) - {
         "order_by",
@@ -274,6 +363,7 @@ def validate_ranking_spec(ranking, model):
         "limit",
         "score_source",
         "weighted_score",
+        "selection_strategy",
     }
     if unexpected:
         raise ValidationError(
@@ -288,6 +378,8 @@ def validate_ranking_spec(ranking, model):
     _validate_score_source(score_source, model)
     if weighted_score is not None:
         _validate_weighted_score(weighted_score)
+    if ranking.get("selection_strategy") is not None:
+        _normalise_selection_strategy(ranking["selection_strategy"], model)
 
     order_by = ranking.get("order_by", [])
     if not isinstance(order_by, list):
@@ -420,6 +512,95 @@ def build_weighted_score(queryset, weighted_score, score_source=None):
     )
 
 
+def _years_ago_boundary(today, years):
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:
+        return today.replace(year=today.year - years, day=28)
+
+
+def _age_range_dob(today, minimum_age, maximum_age):
+    latest = _years_ago_boundary(today, minimum_age)
+    earliest = _years_ago_boundary(today, maximum_age + 1) + timedelta(days=1)
+    return earliest, latest
+
+
+def _annotate_selection_source(queryset, source):
+    if source == SELF_SOURCE:
+        return queryset.annotate(
+            _selection_gender=KeyTextTransform("gender", "json_ext"),
+            _selection_dob=F("dob"),
+        )
+
+    from individual.models import GroupIndividual
+
+    member = GroupIndividual.objects.filter(
+        group_id=OuterRef("pk"),
+        is_deleted=False,
+        individual__is_deleted=False,
+    ).order_by("id")
+    if source == HOUSEHOLD_HEAD_SOURCE:
+        member = member.filter(role=GroupIndividual.Role.HEAD)
+    else:
+        member = member.filter(json_ext__primary_worker=True)
+
+    gender = KeyTextTransform("gender", "individual__json_ext")
+    return queryset.annotate(
+        _selection_gender=Subquery(
+            member.annotate(_value=gender).values("_value")[:1],
+            output_field=CharField(),
+        ),
+        _selection_dob=Subquery(
+            member.values("individual__dob")[:1],
+            output_field=DateField(),
+        ),
+    )
+
+
+def _select_quota_ids(ranked, selection_strategy, cap):
+    """Select at most ``cap`` ranked IDs without loading the eligible pool."""
+    strategy = _normalise_selection_strategy(
+        selection_strategy,
+        ranked.model,
+    )
+    candidates = _annotate_selection_source(ranked, strategy["source"])
+    selected_ids = []
+
+    female_target = math.floor(
+        cap * strategy["female_percentage"] / 100
+    )
+    if female_target:
+        selected_ids.extend(
+            candidates.filter(
+                _selection_gender__iexact=strategy["female_value"]
+            ).values_list("id", flat=True)[:female_target]
+        )
+
+    youth_target = math.floor(
+        cap * strategy["youth_percentage"] / 100
+    )
+    if youth_target:
+        earliest, latest = _age_range_dob(
+            timezone.localdate(),
+            strategy["youth_min_age"],
+            strategy["youth_max_age"],
+        )
+        selected_ids.extend(
+            candidates.exclude(id__in=selected_ids).filter(
+                _selection_dob__range=(earliest, latest)
+            ).values_list("id", flat=True)[:youth_target]
+        )
+
+    remaining = cap - len(selected_ids)
+    if remaining:
+        selected_ids.extend(
+            candidates.exclude(id__in=selected_ids).values_list(
+                "id", flat=True
+            )[:remaining]
+        )
+    return selected_ids
+
+
 def calculate_cap(
     pool_size,
     percentage=None,
@@ -528,6 +709,27 @@ def rank_and_cap_queryset(
         respect_max,
     )
     will_enrol = min(pool_size, cap)
+    selection_strategy = ranking.get("selection_strategy")
+    if selection_strategy is not None:
+        try:
+            selected_ids = _select_quota_ids(
+                ranked,
+                selection_strategy,
+                will_enrol,
+            )
+        except DataError as exc:
+            _cast_error(order_items, exc, weighted_score)
+        capped = apply_ranking(queryset.filter(id__in=selected_ids))
+        return capped, {
+            "pool_size": pool_size,
+            "cap_applied": cap if has_limit else None,
+            "will_enrol": len(selected_ids),
+            "ranking": ranking,
+            "percentage": percentage,
+            "selected_ids": (
+                selected_ids if materialize_selected_ids else None
+            ),
+        }
     if materialize_selected_ids:
         try:
             ranked_ids = list(ranked.values_list("id", flat=True)[:will_enrol])

@@ -1,4 +1,5 @@
 import copy
+from datetime import date
 from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
@@ -15,6 +16,8 @@ from individual.services import (
     build_group_enrollment_selection,
 )
 from social_protection.enrolment_ranking import (
+    HOUSEHOLD_HEAD_SOURCE,
+    _annotate_selection_source,
     calculate_cap,
     build_order_by,
     build_weighted_score,
@@ -162,6 +165,40 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
                 "order_by": ["id"],
             }, Individual)
 
+    def test_selection_strategy_is_opt_in_and_requires_explicit_source(self):
+        with self.assertRaisesMessage(
+            ValidationError,
+            "source must be SELF",
+        ):
+            validate_ranking_spec({
+                "selection_strategy": {"female_percentage": 40},
+            }, Individual)
+
+        order_items, percentage, respect_max = validate_ranking_spec({
+            "selection_strategy": {
+                "source": "SELF",
+                "female_percentage": 40,
+                "youth_percentage": 40,
+            },
+        }, Individual)
+
+        self.assertEqual(order_items[-1]["field"], "id")
+        self.assertIsNone(percentage)
+        self.assertTrue(respect_max)
+
+    def test_selection_strategy_rejects_percentages_above_one_hundred(self):
+        with self.assertRaisesMessage(
+            ValidationError,
+            "percentages cannot exceed 100",
+        ):
+            validate_ranking_spec({
+                "selection_strategy": {
+                    "source": "SELF",
+                    "female_percentage": 60,
+                    "youth_percentage": 50,
+                },
+            }, Individual)
+
     def test_primary_worker_weighted_score_compiles_to_sql(self):
         from individual.models import Group
 
@@ -188,6 +225,20 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         self.assertIn("_weighted_score", sql)
         self.assertIn("individual_individual", sql)
         self.assertIn("business_period", sql)
+
+    def test_household_quota_source_compiles_gender_and_dob_to_sql(self):
+        from individual.models import Group
+
+        candidates = _annotate_selection_source(
+            Group.objects.all(),
+            HOUSEHOLD_HEAD_SOURCE,
+        )
+
+        sql = str(candidates.query)
+        self.assertIn("individual_individual", sql)
+        self.assertIn("gender", sql)
+        self.assertIn("dob", sql.lower())
+        self.assertIn("HEAD", sql)
 
     def test_string_json_ext_snapshot_uses_status_then_wildcard(self):
         plan = Mock(json_ext='{"enrolment_ranking":{"*":{"order_by":["id"]},"ACTIVE":{"order_by":["-id"]}}}')
@@ -740,6 +791,59 @@ class AuthoritativeEnrollmentTest(TestCase):
                 .values_list("id", flat=True)
             ),
             [highest.id, second.id],
+        )
+
+    def test_group_quotas_use_head_gender_and_dob_with_phase_cap(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+            "max_beneficiaries": 2,
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {
+                "enrolment_ranking": {
+                    "ACTIVE": {
+                        "order_by": ["id"],
+                        "selection_strategy": {
+                            "source": "HOUSEHOLD_HEAD",
+                            "female_percentage": 50,
+                            "youth_percentage": 50,
+                            "female_value": "Female",
+                            "youth_min_age": 18,
+                            "youth_max_age": 35,
+                        },
+                    }
+                }
+            },
+        })
+
+        def household(gender, age):
+            group = create_group(self.user.username)
+            head = create_individual(self.user.username, {
+                "dob": date(date.today().year - age, 1, 1),
+                "json_ext": {"gender": gender},
+            })
+            add_individual_to_group(
+                self.user.username,
+                head,
+                group,
+            )
+            return group
+
+        household("Male", 50)
+        young = household("Male", 25)
+        female = household("Female", 45)
+
+        selection = build_group_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["cap_applied"], 2)
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(
+            set(
+                selection["groups_not_assigned_to_selected_programme"]
+                .values_list("id", flat=True)
+            ),
+            {young.id, female.id},
         )
 
     def test_group_selection_only_excludes_active_assignment_for_requested_status(self):
