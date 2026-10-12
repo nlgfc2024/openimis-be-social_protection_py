@@ -6,7 +6,10 @@ from django.utils.translation import gettext as _
 from core.utils import validate_json_schema
 from core.validation import BaseModelValidation, ObjectExistsValidationMixin
 from social_protection.models import Beneficiary, BenefitPlan
-from social_protection.phase_defaults import advanced_criteria_validation_errors
+from social_protection.phase_defaults import (
+    advanced_criteria_validation_errors,
+    enrolment_ranking_validation_errors,
+)
 
 
 class BenefitPlanValidation(BaseModelValidation, ObjectExistsValidationMixin):
@@ -69,13 +72,27 @@ def validate_benefit_plan(data, uuid=None):
             json_ext = None
     if json_ext is not None and not isinstance(json_ext, dict):
         validations.append({"message": "json_ext must be a JSON object."})
-    elif isinstance(json_ext, dict) and 'advanced_criteria' in json_ext:
-        criteria_errors = advanced_criteria_validation_errors(
-            json_ext['advanced_criteria'],
-            beneficiary_data_schema,
-            data.get('type', existing.type if existing else 'BenefitPlan'),
+    elif isinstance(json_ext, dict):
+        benefit_plan_type = data.get(
+            'type',
+            existing.type
+            if existing
+            else BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE,
         )
-        validations.extend({"message": error} for error in criteria_errors)
+        if 'advanced_criteria' in json_ext:
+            criteria_errors = advanced_criteria_validation_errors(
+                json_ext['advanced_criteria'],
+                beneficiary_data_schema,
+                benefit_plan_type,
+            )
+            validations.extend({"message": error} for error in criteria_errors)
+        if 'enrolment_ranking' in json_ext:
+            ranking_errors = enrolment_ranking_validation_errors(
+                json_ext['enrolment_ranking'],
+                beneficiary_data_schema,
+                benefit_plan_type,
+            )
+            validations.extend({"message": error} for error in ranking_errors)
 
     return validations
 

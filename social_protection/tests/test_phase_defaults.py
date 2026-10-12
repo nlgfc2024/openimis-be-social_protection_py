@@ -260,7 +260,9 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
             "common": {},
             "INDIVIDUAL": {},
             "GROUP": {
-                "beneficiary_data_schema": {"properties": {}},
+                "beneficiary_data_schema": {
+                    "properties": {"household_size": {"type": "integer"}},
+                },
                 "json_ext": {
                     "enrolment_ranking": {
                         "ACTIVE": {
@@ -284,6 +286,64 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                 },
             },
         })
+
+    def test_rejects_weighted_field_missing_from_ranked_object_schema(self):
+        with self.assertRaisesMessage(ValidationError, "not defined"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {
+                    "beneficiary_data_schema": {
+                        "properties": {"known_score": {"type": "number"}},
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "ACTIVE": {
+                                "weighted_score": {
+                                    "components": [{
+                                        "field": "unknown_score",
+                                        "weight": 100,
+                                        "scoring": {
+                                            "type": "mapping",
+                                            "values": {"high": 1},
+                                        },
+                                    }],
+                                },
+                                "order_by": ["-_weighted_score"],
+                            },
+                        },
+                    },
+                },
+                "GROUP": {},
+            })
+
+    def test_invalid_weighted_field_type_returns_validation_error(self):
+        with self.assertRaisesMessage(ValidationError, "non-empty string"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {
+                    "beneficiary_data_schema": {
+                        "properties": {"score": {"type": "number"}},
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "ACTIVE": {
+                                "weighted_score": {
+                                    "components": [{
+                                        "field": ["score"],
+                                        "weight": 100,
+                                        "scoring": {
+                                            "type": "mapping",
+                                            "values": {"high": 1},
+                                        },
+                                    }],
+                                },
+                                "order_by": ["-_weighted_score"],
+                            },
+                        },
+                    },
+                },
+                "GROUP": {},
+            })
 
     def test_accepts_phase_level_household_quota_strategy(self):
         validate_benefit_plan_creation_defaults({

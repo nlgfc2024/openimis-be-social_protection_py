@@ -136,6 +136,22 @@ def advanced_criteria_validation_errors(
     return errors
 
 
+def enrolment_ranking_validation_errors(
+    rankings,
+    schema=None,
+    benefit_plan_type="INDIVIDUAL",
+):
+    """Return validation messages for ranking submitted on a Benefit Plan."""
+    errors = []
+    _validate_enrolment_ranking(
+        benefit_plan_type,
+        rankings,
+        schema or {},
+        errors,
+    )
+    return errors
+
+
 def _validate_merged_defaults(benefit_plan_type, defaults, errors):
     schema = defaults.get("beneficiary_data_schema")
     if schema is not None:
@@ -319,7 +335,54 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
             try:
                 validate_ranking_spec(ranking, ranking_model)
             except ValidationError as exc:
-                errors.extend(exc.messages)
+                errors.extend(
+                    f"{status_prefix}: {message}"
+                    for message in exc.messages
+                )
+        _validate_weighted_score_fields(
+            status_prefix,
+            ranking,
+            schema,
+            errors,
+        )
+
+
+def _validate_weighted_score_fields(prefix, ranking, schema, errors):
+    """Check fields stored on the ranked object against its declared schema.
+
+    A group plan's PRIMARY_WORKER score is read from Individual.json_ext, so
+    the group's beneficiary schema cannot describe those fields.
+    """
+    score_source = ranking.get("score_source")
+    if isinstance(score_source, dict) and (
+        score_source.get("type") == "PRIMARY_WORKER"
+    ):
+        return
+
+    properties = (
+        schema.get("properties", {}) if isinstance(schema, dict) else {}
+    )
+    if not isinstance(properties, dict) or not properties:
+        return
+
+    weighted_score = ranking.get("weighted_score")
+    if not isinstance(weighted_score, dict):
+        return
+    components = weighted_score.get("components")
+    if not isinstance(components, list):
+        return
+
+    for index, component in enumerate(components):
+        if not isinstance(component, dict):
+            continue
+        field = component.get("field")
+        if not isinstance(field, str) or not field:
+            continue
+        if field not in properties:
+            errors.append(
+                f"{prefix}.weighted_score.components[{index}].field "
+                f"{field} is not defined in the beneficiary schema."
+            )
 
 
 def _validate_ranking_cast(prefix, path, cast, schema, errors):
