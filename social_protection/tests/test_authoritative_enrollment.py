@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.db import DataError
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.test_helpers import LogInHelper
 from individual.services import (
@@ -432,6 +432,89 @@ class AuthoritativeEnrollmentTest(TestCase):
                 }
             },
         })
+
+    def _youth_quota_fixture(self):
+        benefit_plan = create_benefit_plan(
+            self.user.username,
+            payload_override={
+                "type": "INDIVIDUAL",
+                "max_beneficiaries": 5,
+                "beneficiary_data_schema": {"properties": {}},
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "order_by": ["id"],
+                            "selection_strategy": {
+                                "source": "SELF",
+                                "female_percentage": 60,
+                                "youth_percentage": 40,
+                                "female_value": "Female",
+                                "youth_min_age": 18,
+                                "youth_max_age": 35,
+                            },
+                        }
+                    }
+                },
+            },
+        )
+        create_individual(self.user.username, {
+            "dob": date(date.today().year - 50, 1, 1),
+            "json_ext": {"gender": "Male"},
+        })
+        selected = []
+        for age in (25, 30):
+            selected.append(create_individual(self.user.username, {
+                "dob": date(date.today().year - age, 1, 1),
+                "json_ext": {"gender": "Male"},
+            }))
+        for age in (40, 45, 50):
+            selected.append(create_individual(self.user.username, {
+                "dob": date(date.today().year - age, 1, 1),
+                "json_ext": {"gender": "Female"},
+            }))
+        return benefit_plan, {individual.id for individual in selected}
+
+    @override_settings(USE_TZ=False)
+    def test_youth_quota_preview_works_without_timezones(self):
+        benefit_plan, expected_ids = self._youth_quota_fixture()
+
+        selection = build_individual_enrollment_selection(
+            [],
+            str(benefit_plan.id),
+            "ACTIVE",
+            self.user,
+            materialize_selected_ids=False,
+        )
+
+        self.assertIsNone(selection["selected_ids"])
+        self.assertEqual(
+            set(
+                selection["individuals_not_assigned_to_selected_programme"]
+                .values_list("id", flat=True)
+            ),
+            expected_ids,
+        )
+
+    @override_settings(USE_TZ=False)
+    def test_youth_quota_confirmation_works_without_timezones(self):
+        benefit_plan, expected_ids = self._youth_quota_fixture()
+        service = IndividualService(self.user)
+
+        select_for_confirmation = (
+            IndividualService.select_individuals_to_benefit_plan.__wrapped__
+        )
+        selection = select_for_confirmation(
+            service, [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(set(selection["selected_ids"]), expected_ids)
+        self.assertEqual(
+            set(
+                selection["individuals_not_assigned_to_selected_programme"]
+                .values_list("id", flat=True)
+            ),
+            expected_ids,
+        )
 
     def test_individual_confirmation_cannot_omit_phase_criteria(self):
         benefit_plan = self._benefit_plan("INDIVIDUAL")

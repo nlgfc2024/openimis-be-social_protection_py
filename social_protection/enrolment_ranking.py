@@ -1,6 +1,6 @@
 import json
 import math
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import DataError
@@ -19,7 +19,6 @@ from django.db.models import (
 )
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
-from django.utils import timezone
 
 
 SUPPORTED_CASTS = {
@@ -581,7 +580,7 @@ def _select_quota_ids(ranked, selection_strategy, cap):
     )
     if youth_target:
         earliest, latest = _age_range_dob(
-            timezone.localdate(),
+            date.today(),
             strategy["youth_min_age"],
             strategy["youth_max_age"],
         )
