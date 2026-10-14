@@ -255,6 +255,120 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                 "GROUP": {},
             })
 
+    def test_primary_worker_score_fields_do_not_use_group_plan_schema(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {},
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "beneficiary_data_schema": {
+                    "properties": {"household_size": {"type": "integer"}},
+                },
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "score_source": {
+                                "type": "PRIMARY_WORKER",
+                                "data_field": "individual.json_ext",
+                            },
+                            "weighted_score": {
+                                "components": [{
+                                    "field": "business_experience",
+                                    "weight": 100,
+                                    "scoring": {
+                                        "type": "mapping",
+                                        "values": {"Yes": 1},
+                                    },
+                                }],
+                            },
+                            "order_by": ["-_weighted_score"],
+                        }
+                    }
+                },
+            },
+        })
+
+    def test_rejects_weighted_field_missing_from_ranked_object_schema(self):
+        with self.assertRaisesMessage(ValidationError, "not defined"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {
+                    "beneficiary_data_schema": {
+                        "properties": {"known_score": {"type": "number"}},
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "ACTIVE": {
+                                "weighted_score": {
+                                    "components": [{
+                                        "field": "unknown_score",
+                                        "weight": 100,
+                                        "scoring": {
+                                            "type": "mapping",
+                                            "values": {"high": 1},
+                                        },
+                                    }],
+                                },
+                                "order_by": ["-_weighted_score"],
+                            },
+                        },
+                    },
+                },
+                "GROUP": {},
+            })
+
+    def test_invalid_weighted_field_type_returns_validation_error(self):
+        with self.assertRaisesMessage(ValidationError, "non-empty string"):
+            validate_benefit_plan_creation_defaults({
+                "common": {},
+                "INDIVIDUAL": {
+                    "beneficiary_data_schema": {
+                        "properties": {"score": {"type": "number"}},
+                    },
+                    "json_ext": {
+                        "enrolment_ranking": {
+                            "ACTIVE": {
+                                "weighted_score": {
+                                    "components": [{
+                                        "field": ["score"],
+                                        "weight": 100,
+                                        "scoring": {
+                                            "type": "mapping",
+                                            "values": {"high": 1},
+                                        },
+                                    }],
+                                },
+                                "order_by": ["-_weighted_score"],
+                            },
+                        },
+                    },
+                },
+                "GROUP": {},
+            })
+
+    def test_accepts_phase_level_household_quota_strategy(self):
+        validate_benefit_plan_creation_defaults({
+            "common": {},
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "json_ext": {
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "order_by": ["id"],
+                            "limit": {"percentage": 25},
+                            "selection_strategy": {
+                                "source": "HOUSEHOLD_HEAD",
+                                "female_percentage": 40,
+                                "youth_percentage": 40,
+                                "female_value": "Female",
+                                "youth_min_age": 18,
+                                "youth_max_age": 35,
+                            },
+                        }
+                    }
+                },
+            },
+        })
+
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):

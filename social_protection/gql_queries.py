@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import graphene
 from django.contrib.auth.models import AnonymousUser
@@ -29,6 +30,39 @@ def _have_permissions(user, permission):
     if not user.id:
         return False
     return user.has_perms(permission)
+
+
+def _saved_advanced_criteria(benefit_plan):
+    json_ext = benefit_plan.json_ext or {}
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    if not isinstance(json_ext, dict):
+        return {}
+    saved = json_ext.get("advanced_criteria", {}) or {}
+    return saved if isinstance(saved, (dict, list)) else {}
+
+
+def _effective_advanced_criteria(benefit_plan):
+    saved = _saved_advanced_criteria(benefit_plan)
+    if isinstance(saved, list):
+        saved = {"POTENTIAL": saved}
+    configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
+    mandatory = configured.get(getattr(benefit_plan, "type", None), {}) or {}
+    effective = {}
+    for status in set(saved) | set(mandatory):
+        combined = []
+        for criterion in (
+            list(mandatory.get(status, []) or [])
+            + list(saved.get(status, []) or [])
+        ):
+            if criterion not in combined:
+                combined.append(deepcopy(criterion))
+        if combined or status in saved:
+            effective[status] = combined
+    return effective
 
 
 class JsonExtMixin:
@@ -65,6 +99,7 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     has_payment_plans = graphene.Boolean()
     advanced_criteria = graphene.JSONString()
+    effective_advanced_criteria = graphene.JSONString()
     enrolment_ranking = graphene.JSONString()
 
     class Meta:
@@ -105,15 +140,13 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     def resolve_advanced_criteria(self, info):
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
-            json_ext = self.json_ext or {}
-            if isinstance(json_ext, str):
-                try:
-                    json_ext = json.loads(json_ext)
-                except (TypeError, json.JSONDecodeError):
-                    return {}
-            if isinstance(json_ext, dict):
-                return json_ext.get("advanced_criteria", {})
-            return {}
+            return _saved_advanced_criteria(self)
+        return None
+
+    def resolve_effective_advanced_criteria(self, info):
+        perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
+        if _have_permissions(info.context.user, perms):
+            return _effective_advanced_criteria(self)
         return None
 
     def resolve_enrolment_ranking(self, info):
