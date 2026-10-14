@@ -557,7 +557,12 @@ def _annotate_selection_source(queryset, source):
 
 
 def _select_quota_ids(ranked, selection_strategy, cap):
-    """Select at most ``cap`` ranked IDs without loading the eligible pool."""
+    """Select female, then non-overlapping youth quotas, then ranked fallback.
+
+    ``ranked`` already carries the configured weighted/deterministic ordering.
+    Each quota and the fallback retain that ordering, and exclusions ensure one
+    beneficiary cannot occupy more than one place.
+    """
     strategy = _normalise_selection_strategy(
         selection_strategy,
         ranked.model,

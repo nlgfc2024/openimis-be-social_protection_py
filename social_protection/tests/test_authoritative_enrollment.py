@@ -441,6 +441,7 @@ class AuthoritativeEnrollmentTest(TestCase):
                 "max_beneficiaries": 5,
                 "beneficiary_data_schema": {"properties": {}},
                 "json_ext": {
+                    "advanced_criteria": {"ACTIVE": []},
                     "enrolment_ranking": {
                         "ACTIVE": {
                             "order_by": ["id"],
@@ -473,6 +474,148 @@ class AuthoritativeEnrollmentTest(TestCase):
                 "json_ext": {"gender": "Female"},
             }))
         return benefit_plan, {individual.id for individual in selected}
+
+    def _weighted_quota_plan(self, cap):
+        return create_benefit_plan(
+            self.user.username,
+            payload_override={
+                "type": "INDIVIDUAL",
+                "max_beneficiaries": cap,
+                "beneficiary_data_schema": {"properties": {}},
+                "json_ext": {
+                    "advanced_criteria": {"ACTIVE": []},
+                    "enrolment_ranking": {
+                        "ACTIVE": {
+                            "weighted_score": {
+                                "components": [{
+                                    "field": "quota_rank",
+                                    "weight": 100,
+                                    "scoring": {
+                                        "type": "mapping",
+                                        "values": {
+                                            str(rank): rank
+                                            for rank in range(1, 8)
+                                        },
+                                        "default": 0,
+                                        "maximum_points": 7,
+                                    },
+                                }],
+                            },
+                            "order_by": ["-_weighted_score"],
+                            "tie_breaker": "id",
+                            "selection_strategy": {
+                                "source": "SELF",
+                                "female_percentage": 60,
+                                "youth_percentage": 40,
+                                "female_value": "Female",
+                                "youth_min_age": 18,
+                                "youth_max_age": 35,
+                            },
+                        }
+                    }
+                },
+            },
+        )
+
+    def _quota_candidate(self, rank, gender="Male", age=50):
+        return create_individual(self.user.username, {
+            "dob": date(date.today().year - age, 1, 1),
+            "json_ext": {
+                "gender": gender,
+                "quota_rank": str(rank),
+            },
+        })
+
+    def _selected_individual_ids(self, benefit_plan):
+        selection = build_individual_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+        selected_ids = selection["selected_ids"]
+        queryset_ids = list(
+            selection["individuals_not_assigned_to_selected_programme"]
+            .values_list("id", flat=True)
+        )
+        self.assertEqual(len(selected_ids), len(set(selected_ids)))
+        self.assertLessEqual(len(selected_ids), benefit_plan.max_beneficiaries)
+        return selection, queryset_ids
+
+    def test_small_quota_cap_uses_floor_and_weighted_fallback(self):
+        benefit_plan = self._weighted_quota_plan(cap=2)
+        highest = self._quota_candidate(7)
+        female = self._quota_candidate(6, gender="Female")
+        self._quota_candidate(5, age=25)
+
+        selection, selected_ids = self._selected_individual_ids(benefit_plan)
+
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(selected_ids, [highest.id, female.id])
+
+    def test_quota_shortfall_for_females_uses_weighted_fallback(self):
+        benefit_plan = self._weighted_quota_plan(cap=5)
+        highest = self._quota_candidate(7)
+        youth_high = self._quota_candidate(6, age=25)
+        youth_low = self._quota_candidate(5, age=30)
+        fallback = self._quota_candidate(4)
+        female = self._quota_candidate(3, gender="Female")
+        excluded = self._quota_candidate(2)
+
+        _, selected_ids = self._selected_individual_ids(benefit_plan)
+
+        self.assertEqual(
+            selected_ids,
+            [highest.id, youth_high.id, youth_low.id, fallback.id, female.id],
+        )
+        self.assertNotIn(excluded.id, selected_ids)
+
+    def test_quota_shortfall_for_youth_uses_weighted_fallback(self):
+        benefit_plan = self._weighted_quota_plan(cap=5)
+        highest = self._quota_candidate(7)
+        female_high = self._quota_candidate(6, gender="Female")
+        youth = self._quota_candidate(5, age=25)
+        female_middle = self._quota_candidate(4, gender="Female")
+        excluded = self._quota_candidate(3)
+        female_low = self._quota_candidate(2, gender="Female")
+        lower_female = self._quota_candidate(1, gender="Female")
+
+        _, selected_ids = self._selected_individual_ids(benefit_plan)
+
+        self.assertEqual(
+            selected_ids,
+            [
+                highest.id,
+                female_high.id,
+                youth.id,
+                female_middle.id,
+                female_low.id,
+            ],
+        )
+        self.assertNotIn(excluded.id, selected_ids)
+        self.assertNotIn(lower_female.id, selected_ids)
+
+    def test_female_youth_occupies_only_the_female_quota(self):
+        benefit_plan = self._weighted_quota_plan(cap=5)
+        excluded_highest = self._quota_candidate(7)
+        female_youth = self._quota_candidate(6, gender="Female", age=25)
+        female_middle = self._quota_candidate(5, gender="Female")
+        female_low = self._quota_candidate(4, gender="Female")
+        youth_high = self._quota_candidate(3, age=25)
+        youth_low = self._quota_candidate(2, age=30)
+        self._quota_candidate(1)
+
+        selection, selected_ids = self._selected_individual_ids(benefit_plan)
+
+        self.assertEqual(
+            selected_ids,
+            [
+                female_youth.id,
+                female_middle.id,
+                female_low.id,
+                youth_high.id,
+                youth_low.id,
+            ],
+        )
+        self.assertEqual(selection["selected_ids"].count(female_youth.id), 1)
+        self.assertNotIn(excluded_highest.id, selected_ids)
 
     @override_settings(USE_TZ=False)
     def test_youth_quota_preview_works_without_timezones(self):
