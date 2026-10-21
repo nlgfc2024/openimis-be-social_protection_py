@@ -14,6 +14,7 @@ from social_protection.apps import SocialProtectionConfig
 
 
 class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
+
     def test_criteria_only_update_preserves_hidden_json_ext(self):
         user = Mock()
         user.has_perms.return_value = False
