@@ -101,6 +101,7 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     advanced_criteria = graphene.JSONString()
     effective_advanced_criteria = graphene.JSONString()
     enrolment_ranking = graphene.JSONString()
+    updates_require_approval = graphene.Boolean()
 
     class Meta:
         model = BenefitPlan
@@ -162,6 +163,12 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
                 return json_ext.get("enrolment_ranking", {})
             return {}
         return None
+
+    def resolve_updates_require_approval(self, info):
+        if _have_permissions(info.context.user, SocialProtectionConfig.gql_benefit_plan_criteria_search_perms):
+            return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
+        return None
+
 
 
 class BeneficiarySharedFilterMixin:
