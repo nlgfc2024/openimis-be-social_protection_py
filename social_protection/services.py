@@ -14,6 +14,7 @@ from calculation.services import get_calculation_object
 from core.services import BaseService
 from core.signals import register_service_signal
 from individual.models import (
+    GroupIndividual,
     IndividualDataSourceUpload,
     IndividualDataSource,
     Individual,
@@ -31,6 +32,7 @@ from social_protection.phase_defaults import (
 from core.code_generation import generate_unique_year_code
 
 from social_protection.utils import (
+    bulk_create_in_batches,
     load_dataframe,
     fetch_summary_of_valid_items,
     fetch_summary_of_broken_items,
@@ -50,6 +52,131 @@ from core.models import User
 from core.services.utils import output_exception
 
 logger = logging.getLogger(__name__)
+
+
+class EnrollmentPersistenceService:
+    """Supported Social Protection persistence API for Enrolment.
+
+    This service deliberately contains no confirmation orchestration and no
+    maker-checker decision.  Enrolment owns that workflow and calls one of the
+    explicit persistence operations below.
+    """
+
+    def __init__(self, user):
+        self.user = user
+
+    @transaction.atomic
+    def persist_individuals(self, benefit_plan_id, status, individuals):
+        beneficiaries = (
+            Beneficiary(
+                individual=individual,
+                benefit_plan_id=benefit_plan_id,
+                status=status,
+                json_ext=individual.json_ext,
+                user_created=self.user,
+                user_updated=self.user,
+                uuid=uuid.uuid4(),
+            )
+            for individual in individuals.iterator(chunk_size=1000)
+        )
+        bulk_create_in_batches(Beneficiary.objects, beneficiaries)
+
+    @transaction.atomic
+    def persist_groups(self, benefit_plan_id, status, groups):
+        group_heads = self._group_heads(groups)
+        beneficiaries = (
+            GroupBeneficiary(
+                group=group_head.group,
+                benefit_plan_id=benefit_plan_id,
+                status=status,
+                json_ext=group_head.individual.json_ext,
+                user_created=self.user,
+                user_updated=self.user,
+                uuid=uuid.uuid4(),
+            )
+            for group_head in group_heads.iterator(chunk_size=1000)
+        )
+        bulk_create_in_batches(GroupBeneficiary.objects, beneficiaries)
+
+    @transaction.atomic
+    def stage_individuals(self, benefit_plan, individuals):
+        upload_record = self._create_upload_record(
+            benefit_plan,
+            source_type="beneficiary import",
+        )
+        data_sources = (
+            IndividualDataSource(
+                uuid=uuid.uuid4(),
+                user_created=self.user,
+                user_updated=self.user,
+                upload=upload_record.data_upload,
+                individual=individual,
+                json_ext=individual.json_ext,
+                validations={},
+            )
+            for individual in individuals.iterator(chunk_size=1000)
+        )
+        bulk_create_in_batches(IndividualDataSource.objects, data_sources)
+        return upload_record
+
+    @transaction.atomic
+    def stage_groups(self, benefit_plan, groups):
+        group_heads = self._group_heads(groups)
+        upload_record = self._create_upload_record(
+            benefit_plan,
+            source_type="beneficiary group import",
+        )
+        data_sources = (
+            IndividualDataSource(
+                uuid=uuid.uuid4(),
+                user_created=self.user,
+                user_updated=self.user,
+                upload=upload_record.data_upload,
+                individual=group_head.individual,
+                json_ext=group_head.individual.json_ext,
+                validations={},
+            )
+            for group_head in group_heads.iterator(chunk_size=1000)
+        )
+        bulk_create_in_batches(IndividualDataSource.objects, data_sources)
+        return upload_record
+
+    def _create_upload_record(self, benefit_plan, source_type):
+        from core import datetime
+
+        upload = IndividualDataSourceUpload(
+            source_name=(
+                f"Enrollment into {benefit_plan.code} {datetime.date.today()}"
+            ),
+            source_type=source_type,
+        )
+        upload.save(username=self.user.login_name)
+        upload_record = BenefitPlanDataUploadRecords(
+            data_upload=upload,
+            benefit_plan=benefit_plan,
+            workflow="Enrollment",
+        )
+        upload_record.save(username=self.user.username)
+        return upload_record
+
+    @staticmethod
+    def _group_heads(groups):
+        group_ids = groups.values_list("id", flat=True)
+        group_heads = GroupIndividual.objects.filter(
+            is_deleted=False,
+            group_id__in=group_ids,
+            role=GroupIndividual.Role.HEAD,
+        ).select_related("group", "individual").distinct()
+        selected_count = groups.count()
+        if (
+            group_heads.values("group_id").distinct().count() != selected_count
+            or group_heads.count() != selected_count
+        ):
+            raise ValidationError(
+                "Every selected group must have a non-deleted household head "
+                "before it can be enrolled."
+            )
+        return group_heads
 
 
 class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):

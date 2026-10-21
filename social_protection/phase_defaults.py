@@ -330,7 +330,7 @@ def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
                 "selection_strategy",
             )
         ):
-            from social_protection.enrolment_ranking import validate_ranking_spec
+            from enrolment.ranking import validate_ranking_spec
 
             try:
                 validate_ranking_spec(ranking, ranking_model)
