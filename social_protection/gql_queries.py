@@ -1,12 +1,10 @@
 import json
-from copy import deepcopy
 
 import graphene
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import Q
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
-import graphene_django_optimizer as gql_optimizer
 import django_filters
 
 from contribution_plan.models import PaymentPlan
@@ -45,26 +43,6 @@ def _saved_advanced_criteria(benefit_plan):
     return saved if isinstance(saved, (dict, list)) else {}
 
 
-def _effective_advanced_criteria(benefit_plan):
-    saved = _saved_advanced_criteria(benefit_plan)
-    if isinstance(saved, list):
-        saved = {"POTENTIAL": saved}
-    configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
-    mandatory = configured.get(getattr(benefit_plan, "type", None), {}) or {}
-    effective = {}
-    for status in set(saved) | set(mandatory):
-        combined = []
-        for criterion in (
-            list(mandatory.get(status, []) or [])
-            + list(saved.get(status, []) or [])
-        ):
-            if criterion not in combined:
-                combined.append(deepcopy(criterion))
-        if combined or status in saved:
-            effective[status] = combined
-    return effective
-
-
 class JsonExtMixin:
     def resolve_json_ext(self, info):
         user = info.context.user
@@ -99,7 +77,6 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     has_payment_plans = graphene.Boolean()
     advanced_criteria = graphene.JSONString()
-    effective_advanced_criteria = graphene.JSONString()
     enrolment_ranking = graphene.JSONString()
     updates_require_approval = graphene.Boolean()
 
@@ -142,12 +119,6 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
             return _saved_advanced_criteria(self)
-        return None
-
-    def resolve_effective_advanced_criteria(self, info):
-        perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
-        if _have_permissions(info.context.user, perms):
-            return _effective_advanced_criteria(self)
         return None
 
     def resolve_enrolment_ranking(self, info):
