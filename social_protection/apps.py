@@ -6,10 +6,7 @@ from django.apps import AppConfig
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
 from core.module_config_registry import register_reloader, register_validator
-from social_protection.phase_defaults import (
-    validate_benefit_plan_creation_defaults,
-    validate_mandatory_enrollment_criteria,
-)
+from social_protection.phase_defaults import validate_benefit_plan_creation_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +34,6 @@ DEFAULT_CONFIG = {
         "INDIVIDUAL": {},
         "GROUP": {},
     },
-    "mandatory_enrollment_criteria": {
-        "INDIVIDUAL": {},
-        "GROUP": {},
-    },
     # Activity/project rights (208001, 209001–209006) now belong to
     # project_social_protection; removed here to avoid dual ownership. The seeding
     # migration social_protection/0017 that grants them to admin is left in place.
@@ -61,10 +54,6 @@ DEFAULT_CONFIG = {
 
     "validation_import_valid_items_workflow": "beneficiary-import-valid-items.beneficiary-import-valid-items",
     "validation_upload_valid_items_workflow": "beneficiary-upload-valid-items.beneficiary-upload-valid-items",
-    "validation_enrollment": "validation-enrollment",
-    "validation_group_enrollment": "validation-group-enrollment",
-
-    "enable_maker_checker_logic_enrollment": True,
     "enable_maker_checker_for_group_upload": True,
     "beneficiary_mask_fields": [
         'json_ext.beneficiary_data_source',
@@ -104,7 +93,6 @@ class SocialProtectionConfig(AppConfig):
     gql_benefit_plan_criteria_search_perms = None
     gql_benefit_plan_criteria_update_perms = None
     benefit_plan_creation_defaults = None
-    mandatory_enrollment_criteria = None
 
     gql_check_benefit_plan_update = None
     gql_check_beneficiary_crud = None
@@ -115,8 +103,6 @@ class SocialProtectionConfig(AppConfig):
     validation_download_invalid_items = None
     validation_import_valid_items_workflow = None
     validation_upload_valid_items_workflow = None
-    validation_enrollment = None
-    validation_group_enrollment = None
     validation_import_group_valid_items = None
     benefit_plan_suspend = None
 
@@ -124,7 +110,6 @@ class SocialProtectionConfig(AppConfig):
     enable_maker_checker_for_beneficiary_update = None
 
     enable_python_workflows = None
-    enable_maker_checker_logic_enrollment = None
     enable_maker_checker_for_group_upload = None
     beneficiary_mask_fields = None
     group_beneficiary_mask_fields = None
@@ -229,9 +214,6 @@ class SocialProtectionConfig(AppConfig):
     def __validate_config(cls, cfg):
         validate_benefit_plan_creation_defaults(
             cfg.get("benefit_plan_creation_defaults", {})
-        )
-        validate_mandatory_enrollment_criteria(
-            cfg.get("mandatory_enrollment_criteria", {})
         )
 
     def __register_masking_class(cls):

@@ -5,11 +5,19 @@ from django.utils.translation import gettext as _
 
 from core.utils import validate_json_schema
 from core.validation import BaseModelValidation, ObjectExistsValidationMixin
-from social_protection.models import Beneficiary, BenefitPlan
-from social_protection.phase_defaults import (
-    advanced_criteria_validation_errors,
-    enrolment_ranking_validation_errors,
+from social_protection.benefit_plan_validators import (
+    register_benefit_plan_validator,
+    run_benefit_plan_validators,
+    unregister_benefit_plan_validator,
 )
+from social_protection.models import Beneficiary, BenefitPlan
+from social_protection.phase_defaults import advanced_criteria_validation_errors
+
+
+__all__ = [
+    "register_benefit_plan_validator",
+    "unregister_benefit_plan_validator",
+]
 
 
 class BenefitPlanValidation(BaseModelValidation, ObjectExistsValidationMixin):
@@ -86,13 +94,8 @@ def validate_benefit_plan(data, uuid=None):
                 benefit_plan_type,
             )
             validations.extend({"message": error} for error in criteria_errors)
-        if 'enrolment_ranking' in json_ext:
-            ranking_errors = enrolment_ranking_validation_errors(
-                json_ext['enrolment_ranking'],
-                beneficiary_data_schema,
-                benefit_plan_type,
-            )
-            validations.extend({"message": error} for error in ranking_errors)
+
+    validations.extend(run_benefit_plan_validators(data, existing))
 
     return validations
 

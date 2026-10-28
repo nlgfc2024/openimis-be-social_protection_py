@@ -17,16 +17,16 @@ class ModuleConfigTest(TestCase):
             config.save()
 
         self.assertTrue(SocialProtectionConfig.gql_check_benefit_plan_update)
-        self.assertTrue(SocialProtectionConfig.enable_maker_checker_logic_enrollment)
 
         # Update config should trigger a reload
         updated_config = {
             "gql_check_benefit_plan_update": False,
-            "enable_maker_checker_logic_enrollment": False,
         }
+        # ModuleConfiguration._cfg is a cached property; use a fresh instance
+        # when simulating the separate request that updates configuration.
+        config = ModuleConfiguration.objects.get(pk=config.pk)
         config.config = json.dumps(updated_config)
         with self.captureOnCommitCallbacks(execute=True):
             config.save()
 
         self.assertFalse(SocialProtectionConfig.gql_check_benefit_plan_update)
-        self.assertFalse(SocialProtectionConfig.enable_maker_checker_logic_enrollment)

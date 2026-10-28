@@ -1,10 +1,12 @@
 import copy
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from django.core.exceptions import FieldDoesNotExist, ValidationError
+from django.core.exceptions import ValidationError
 
 from core.custom_filters import CustomFilterWizardInterface
 from core.utils import validate_json_schema
+from social_protection.benefit_plan_validators import run_benefit_plan_validators
 
 DEFAULT_SECTIONS = {"common", "INDIVIDUAL", "GROUP"}
 DEFAULT_FIELDS = {
@@ -16,8 +18,6 @@ DEFAULT_FIELDS = {
     "description",
 }
 BENEFICIARY_STATUSES = {"POTENTIAL", "ACTIVE", "SUSPENDED", "GRADUATED"}
-RANKING_STATUSES = BENEFICIARY_STATUSES | {"*"}
-RANKING_CASTS = {"int", "float", "date", "str"}
 CRITERION_FIELDS = {"field", "filter", "type", "value"}
 FILTERS_BY_TYPE = {
     **CustomFilterWizardInterface.FILTERS_BASED_ON_FIELD_TYPE,
@@ -93,34 +93,6 @@ def validate_benefit_plan_creation_defaults(defaults):
         raise ValidationError({"config": errors})
 
 
-def validate_mandatory_enrollment_criteria(criteria):
-    """Validate live system criteria without coupling them to a Phase schema."""
-    errors = []
-    if not isinstance(criteria, dict):
-        raise ValidationError({"config": [
-            "mandatory_enrollment_criteria must be an object."
-        ]})
-
-    unexpected_types = set(criteria) - {"INDIVIDUAL", "GROUP"}
-    if unexpected_types:
-        errors.append(
-            "Unsupported mandatory_enrollment_criteria types: "
-            + ", ".join(sorted(unexpected_types))
-        )
-
-    for benefit_plan_type in ("INDIVIDUAL", "GROUP"):
-        type_criteria = criteria.get(benefit_plan_type, {})
-        _validate_advanced_criteria(
-            f"mandatory_enrollment_criteria.{benefit_plan_type}",
-            type_criteria,
-            {},
-            errors,
-        )
-
-    if errors:
-        raise ValidationError({"config": errors})
-
-
 def advanced_criteria_validation_errors(
     criteria,
     schema=None,
@@ -130,22 +102,6 @@ def advanced_criteria_validation_errors(
     _validate_advanced_criteria(
         benefit_plan_type,
         criteria,
-        schema or {},
-        errors,
-    )
-    return errors
-
-
-def enrolment_ranking_validation_errors(
-    rankings,
-    schema=None,
-    benefit_plan_type="INDIVIDUAL",
-):
-    """Return validation messages for ranking submitted on a Benefit Plan."""
-    errors = []
-    _validate_enrolment_ranking(
-        benefit_plan_type,
-        rankings,
         schema or {},
         errors,
     )
@@ -175,13 +131,15 @@ def _validate_merged_defaults(benefit_plan_type, defaults, errors):
             schema or {},
             errors,
         )
-    if isinstance(json_ext, dict) and "enrolment_ranking" in json_ext:
-        _validate_enrolment_ranking(
-            benefit_plan_type,
-            json_ext["enrolment_ranking"],
-            schema or {},
-            errors,
-        )
+    validator_errors = run_benefit_plan_validators(
+        {"type": benefit_plan_type, **defaults}
+    )
+    errors.extend(
+        error.get("message", str(error))
+        if isinstance(error, dict)
+        else str(error)
+        for error in validator_errors
+    )
 
     max_beneficiaries = defaults.get("max_beneficiaries")
     invalid_max_beneficiaries = any((
@@ -221,218 +179,6 @@ def _validate_advanced_criteria(benefit_plan_type, criteria, schema, errors):
         for index, criterion in enumerate(status_criteria):
             prefix = f"{benefit_plan_type} advanced_criteria.{status}[{index}]"
             _validate_criterion(prefix, criterion, properties, errors)
-
-
-def _validate_enrolment_ranking(benefit_plan_type, rankings, schema, errors):
-    from individual.models import Group, Individual
-    ranking_model = Individual if benefit_plan_type == "INDIVIDUAL" else Group
-    prefix = f"{benefit_plan_type} enrolment_ranking"
-    if not isinstance(rankings, dict):
-        errors.append(f"{prefix} must be an object.")
-        return
-    for status, ranking in rankings.items():
-        status_prefix = f"{prefix}.{status}"
-        if status not in RANKING_STATUSES:
-            errors.append(f"{prefix} has unsupported status {status}.")
-            continue
-        if not isinstance(ranking, dict):
-            errors.append(f"{status_prefix} must be an object.")
-            continue
-        unexpected = set(ranking) - {
-            "order_by",
-            "tie_breaker",
-            "limit",
-            "score_source",
-            "weighted_score",
-            "selection_strategy",
-        }
-        if unexpected:
-            errors.append(
-                f"{status_prefix} has unsupported keys: {', '.join(sorted(unexpected))}."
-            )
-        order_by = ranking.get("order_by", [])
-        if not isinstance(order_by, list):
-            errors.append(f"{status_prefix}.order_by must be a list.")
-        else:
-            for index, item in enumerate(order_by):
-                item_prefix = f"{status_prefix}.order_by[{index}]"
-                if isinstance(item, str):
-                    if not item or item == "-":
-                        errors.append(f"{item_prefix} must name a field.")
-                    elif (
-                        item.lstrip("-") != "_weighted_score"
-                        or "weighted_score" not in ranking
-                    ) and not _ranking_model_path_exists(ranking_model, item):
-                        errors.append(f"{item_prefix} field {item} is unsupported.")
-                    continue
-                if not isinstance(item, dict):
-                    errors.append(f"{item_prefix} must be a string or object.")
-                    continue
-                unexpected_item = set(item) - {"field", "direction", "cast", "nulls"}
-                if unexpected_item:
-                    errors.append(
-                        f"{item_prefix} has unsupported keys: "
-                        f"{', '.join(sorted(unexpected_item))}."
-                    )
-                if not isinstance(item.get("field"), str) or not item.get("field"):
-                    errors.append(f"{item_prefix}.field must be a non-empty string.")
-                elif (
-                    item["field"] != "_weighted_score"
-                    or "weighted_score" not in ranking
-                ) and not _ranking_model_path_exists(ranking_model, item["field"]):
-                    errors.append(f"{item_prefix}.field {item['field']} is unsupported.")
-                if item.get("direction", "asc") not in {"asc", "desc"}:
-                    errors.append(f"{item_prefix}.direction must be asc or desc.")
-                if item.get("cast") not in ({None} | RANKING_CASTS):
-                    errors.append(f"{item_prefix}.cast is unsupported.")
-                elif item.get("cast"):
-                    _validate_ranking_cast(
-                        item_prefix,
-                        item.get("field"),
-                        item["cast"],
-                        schema,
-                        errors,
-                    )
-                if item.get("nulls") not in {None, "first", "last"}:
-                    errors.append(f"{item_prefix}.nulls must be first or last.")
-        tie_breaker = ranking.get("tie_breaker", "id")
-        if not isinstance(tie_breaker, str) or not tie_breaker:
-            errors.append(f"{status_prefix}.tie_breaker must be a non-empty string.")
-        elif not _ranking_model_path_exists(ranking_model, tie_breaker):
-            errors.append(f"{status_prefix}.tie_breaker {tie_breaker} is unsupported.")
-        limit = ranking.get("limit", {})
-        if not isinstance(limit, dict):
-            errors.append(f"{status_prefix}.limit must be an object.")
-            continue
-        unexpected_limit = set(limit) - {"percentage", "respect_max_beneficiaries"}
-        if unexpected_limit:
-            errors.append(
-                f"{status_prefix}.limit has unsupported keys: "
-                f"{', '.join(sorted(unexpected_limit))}."
-            )
-        percentage = limit.get("percentage")
-        if percentage is not None and (
-            isinstance(percentage, bool)
-            or not isinstance(percentage, (int, float))
-            or not 1 <= percentage <= 100
-        ):
-            errors.append(f"{status_prefix}.limit.percentage must be between 1 and 100.")
-        respect_max = limit.get("respect_max_beneficiaries", True)
-        if not isinstance(respect_max, bool):
-            errors.append(
-                f"{status_prefix}.limit.respect_max_beneficiaries must be boolean."
-            )
-        if any(
-            key in ranking
-            for key in (
-                "weighted_score",
-                "score_source",
-                "selection_strategy",
-            )
-        ):
-            from enrolment.ranking import validate_ranking_spec
-
-            try:
-                validate_ranking_spec(ranking, ranking_model)
-            except ValidationError as exc:
-                errors.extend(
-                    f"{status_prefix}: {message}"
-                    for message in exc.messages
-                )
-        _validate_weighted_score_fields(
-            status_prefix,
-            ranking,
-            schema,
-            errors,
-        )
-
-
-def _validate_weighted_score_fields(prefix, ranking, schema, errors):
-    """Check fields stored on the ranked object against its declared schema.
-
-    A group plan's PRIMARY_WORKER score is read from Individual.json_ext, so
-    the group's beneficiary schema cannot describe those fields.
-    """
-    score_source = ranking.get("score_source")
-    if isinstance(score_source, dict) and (
-        score_source.get("type") == "PRIMARY_WORKER"
-    ):
-        return
-
-    properties = (
-        schema.get("properties", {}) if isinstance(schema, dict) else {}
-    )
-    if not isinstance(properties, dict) or not properties:
-        return
-
-    weighted_score = ranking.get("weighted_score")
-    if not isinstance(weighted_score, dict):
-        return
-    components = weighted_score.get("components")
-    if not isinstance(components, list):
-        return
-
-    for index, component in enumerate(components):
-        if not isinstance(component, dict):
-            continue
-        field = component.get("field")
-        if not isinstance(field, str) or not field:
-            continue
-        if field not in properties:
-            errors.append(
-                f"{prefix}.weighted_score.components[{index}].field "
-                f"{field} is not defined in the beneficiary schema."
-            )
-
-
-def _validate_ranking_cast(prefix, path, cast, schema, errors):
-    """Validate JSON casts from declared data types without startup DB access."""
-    if not isinstance(path, str) or not path.startswith("json_ext__"):
-        return
-    property_name = path.split("__", 1)[1]
-    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-    definition = properties.get(property_name)
-    if not isinstance(definition, dict):
-        errors.append(
-            f"{prefix}.cast requires json_ext property {property_name} "
-            "to be typed in beneficiary_data_schema."
-        )
-        return
-
-    schema_type = definition.get("type")
-    compatible_types = {
-        "int": {"integer"},
-        "float": {"integer", "number", "numeric"},
-        "date": {"string"},
-        "str": {"string", "integer", "number", "numeric", "boolean"},
-    }[cast]
-    if schema_type not in compatible_types:
-        errors.append(
-            f"{prefix}.cast {cast} is incompatible with "
-            f"beneficiary_data_schema property {property_name} of type {schema_type}."
-        )
-    if cast == "date" and definition.get("format") not in {"date", "date-time"}:
-        errors.append(
-            f"{prefix}.cast date requires beneficiary_data_schema property "
-            f"{property_name} to use format date or date-time."
-        )
-
-
-def _ranking_model_path_exists(model, path):
-    parts = path.lstrip("-").split("__")
-    current_model = model
-    for index, part in enumerate(parts):
-        try:
-            field = current_model._meta.get_field(part)
-        except (FieldDoesNotExist, AttributeError):
-            return False
-        if index == 0 and part == "json_ext" and len(parts) > 1:
-            return True
-        if index < len(parts) - 1:
-            current_model = field.related_model
-            if current_model is None:
-                return False
-    return True
 
 
 def _validate_criterion(prefix, criterion, properties, errors):
