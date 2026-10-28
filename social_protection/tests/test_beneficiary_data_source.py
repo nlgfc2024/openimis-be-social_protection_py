@@ -55,10 +55,11 @@ class BeneficiaryDataSourceTest(TestCase):
 
         self.assertFalse(moved.get("success"))
 
-    def test_group_plan_checks_the_household_source(self):
+    def test_group_plan_checks_the_household_source_by_its_code(self):
         service = GroupBeneficiaryService(self.user)
-        pwp_group = create_group(self.user.username, {"json_ext": {"source_type": "pwp"}})
-        msr_group = create_group(self.user.username, {"json_ext": {}})
+        # No json_ext tag, as for a household without a head; the code carries the source
+        pwp_group = create_group(self.user.username, {"code": "pwp:94104570", "json_ext": {}})
+        msr_group = create_group(self.user.username, {"code": "94104571", "json_ext": {"source_type": "pwp"}})
 
         accepted = service.create({"group_id": pwp_group.id, "benefit_plan_id": self.pwp_group_plan.id, "status": "POTENTIAL"})
         rejected = service.create({"group_id": msr_group.id, "benefit_plan_id": self.pwp_group_plan.id, "status": "POTENTIAL"})
