@@ -47,7 +47,7 @@ class ProcessImportBeneficiariesWorkflowTest(TestCase):
         super().tearDownClass()
 
     def setUp(self):
-        self.user = create_test_interactive_user(username='Admin')
+        self.user = create_test_interactive_user(username='BeneficiaryUploadAdmin')
         self.user_uuid = self.user.id
         self.plan_schema = {"properties": {}}
 

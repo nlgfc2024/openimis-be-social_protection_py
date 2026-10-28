@@ -4,6 +4,7 @@ import time
 import string
 import copy
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
+from django.test import override_settings
 from core.models.base_mutation import MutationLog
 from individual.models import Individual, Group, GroupIndividual
 from social_protection.models import BenefitPlan
@@ -12,7 +13,6 @@ from social_protection.tests.data import (
     service_beneficiary_add_payload,
     service_add_individual_payload_with_ext,
 )
-from location.test_helpers import create_test_village
 
 
 def generate_random_string(length=6):
@@ -114,6 +114,7 @@ def add_group_to_benefit_plan(service, group, benefit_plan, payload_override={})
 # together with the project domain.
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class PatchedOpenIMISGraphQLTestCase(openIMISGraphQLTestCase):
 
     # overriding helper method from core to allow errors
