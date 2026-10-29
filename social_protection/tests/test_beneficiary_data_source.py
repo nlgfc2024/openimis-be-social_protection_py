@@ -1,10 +1,13 @@
 import pandas as pd
 from django.test import SimpleTestCase, TestCase
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.test_helpers import LogInHelper
+from individual.models import Individual
 from social_protection.models import Beneficiary, GroupBeneficiary
 from social_protection.services import BeneficiaryImportService, BeneficiaryService, GroupBeneficiaryService
+from social_protection.signals.on_validation_import_valid_items import BaseGroupColumnAggregationClass
 from social_protection.tests.test_helpers import create_benefit_plan, create_group, create_individual
 
 
@@ -90,3 +93,29 @@ class BeneficiaryImportDataSourceTest(SimpleTestCase):
         result = self.apply(df, SimpleNamespace(json_ext={"data_source": "pwp"}))
 
         self.assertEqual(result["data_source"].tolist(), ["pwp"])
+
+
+class ImportedHouseholdSourceTest(TestCase):
+    """Households built from imported rows never mix data sources."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = LogInHelper().get_or_create_user_api()
+
+    def test_one_code_in_two_sources_makes_two_households(self):
+        members = {
+            source: create_individual(self.user.username, {"json_ext": {"group_code": "123", "individual_role": "HEAD", "data_source": source}})
+            for source in ("pwp", "sctp")
+        }
+        event = BaseGroupColumnAggregationClass("w.f", None, None, None, self.user)
+        event.set_group_aggregation_column("group_code")
+        event.individuals = Individual.objects.filter(id__in=[member.id for member in members.values()])
+        event.grouped_individuals = event._get_grouped_individuals()
+        payloads = []
+        with patch.object(event, "_create_group_data_source", side_effect=payloads.append):
+            event._create_or_update_groups_using_group_code()
+
+        self.assertEqual(
+            {p["json_ext"]["data_source"]: [row["individual_id"] for row in p["individuals_data"]] for p in payloads},
+            {source: [str(member.id)] for source, member in members.items()},
+        )
