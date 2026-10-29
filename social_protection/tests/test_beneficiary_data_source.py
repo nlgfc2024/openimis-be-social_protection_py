@@ -22,8 +22,8 @@ class BeneficiaryDataSourceTest(TestCase):
             cls.user.username, {"code": "DSGRP", "type": "GROUP", "json_ext": {"data_source": "pwp"}},
         )
 
-    def _individual(self, source_type=None):
-        json_ext = {"source_type": source_type} if source_type else {}
+    def _individual(self, data_source=None):
+        json_ext = {"data_source": data_source} if data_source else {}
         return create_individual(self.user.username, {"json_ext": json_ext})
 
     def _add(self, plan, individual):
@@ -58,7 +58,7 @@ class BeneficiaryDataSourceTest(TestCase):
     def test_group_plan_checks_the_household_source(self):
         service = GroupBeneficiaryService(self.user)
         # Same code in both sources: the household's tag decides
-        pwp_group = create_group(self.user.username, {"code": "94104570", "json_ext": {"source_type": "pwp"}})
+        pwp_group = create_group(self.user.username, {"code": "94104570", "json_ext": {"data_source": "pwp"}})
         msr_group = create_group(self.user.username, {"code": "94104570", "json_ext": {}})
 
         accepted = service.create({"group_id": pwp_group.id, "benefit_plan_id": self.pwp_group_plan.id, "status": "POTENTIAL"})
@@ -80,13 +80,13 @@ class BeneficiaryImportDataSourceTest(SimpleTestCase):
         default = self.apply(df, SimpleNamespace(json_ext={}))
         pwp = self.apply(df, SimpleNamespace(json_ext={"data_source": "pwp"}))
 
-        self.assertEqual(default["source_type"].tolist(), ["ubr", "ubr"])
-        self.assertEqual(pwp["source_type"].tolist(), ["pwp", "pwp"])
+        self.assertEqual(default["data_source"].tolist(), ["ubr", "ubr"])
+        self.assertEqual(pwp["data_source"].tolist(), ["pwp", "pwp"])
         self.assertEqual(pwp["group_code"].tolist()[0], "30874398")
 
-    def test_overrides_a_source_type_column_in_the_file(self):
-        df = pd.DataFrame({"first_name": ["A"], "source_type": ["ubr"]})
+    def test_overrides_a_data_source_column_in_the_file(self):
+        df = pd.DataFrame({"first_name": ["A"], "data_source": ["ubr"]})
 
         result = self.apply(df, SimpleNamespace(json_ext={"data_source": "pwp"}))
 
-        self.assertEqual(result["source_type"].tolist(), ["pwp"])
+        self.assertEqual(result["data_source"].tolist(), ["pwp"])
