@@ -13,7 +13,7 @@ from pandas import DataFrame
 from calculation.services import get_calculation_object
 from core.services import BaseService
 from core.signals import register_service_signal
-from individual.data_source import DATA_SOURCE_FIELD, benefit_plan_data_source, data_source_group_code
+from individual.data_source import DATA_SOURCE_FIELD, benefit_plan_data_source
 from individual.models import (
     IndividualDataSourceUpload,
     IndividualDataSource,
@@ -314,7 +314,7 @@ class BeneficiaryImportService:
         workflow: WorkflowHandler,
         group_aggregation_column: str
     ):
-        upload = self._save_sources(import_file, benefit_plan, group_aggregation_column)
+        upload = self._save_sources(import_file, benefit_plan)
         self._create_benefit_plan_data_upload_records(
             benefit_plan, workflow, upload, group_aggregation_column
         )
@@ -322,28 +322,22 @@ class BeneficiaryImportService:
         return {'success': True, 'data': {'upload_uuid': upload.uuid}}
 
     @transaction.atomic
-    def _save_sources(self, import_file, benefit_plan, group_aggregation_column=None):
+    def _save_sources(self, import_file, benefit_plan):
         # Method separated as workflow execution must be independent of
         # the atomic transaction.
         upload = self._create_upload_entry(import_file.name)
         dataframe = self._load_import_file(import_file)
         self._validate_dataframe(dataframe)
-        dataframe = self._apply_benefit_plan_data_source(dataframe, benefit_plan, group_aggregation_column)
+        dataframe = self._apply_benefit_plan_data_source(dataframe, benefit_plan)
         self._save_data_source(dataframe, upload)
         return upload
 
     @staticmethod
-    def _apply_benefit_plan_data_source(dataframe, benefit_plan, group_aggregation_column=None):
-        """People imported into a plan belong to the plan's data source, so other programmes never
-        use them; a non-default source also gets its own household codes (see individual.data_source)."""
-        data_source = benefit_plan_data_source(benefit_plan)
+    def _apply_benefit_plan_data_source(dataframe, benefit_plan):
+        """People imported into a plan belong to the plan's data source, so other programmes never use
+        them; their households take the source from them (see individual.data_source)."""
         dataframe = dataframe.copy()
-        dataframe[DATA_SOURCE_FIELD] = data_source
-        household_column = group_aggregation_column if group_aggregation_column not in (None, "", "null") else "group_code"
-        if household_column in dataframe.columns:
-            dataframe[household_column] = dataframe[household_column].map(
-                lambda code: data_source_group_code(data_source, code) if pd.notna(code) and str(code) != "" else code
-            )
+        dataframe[DATA_SOURCE_FIELD] = benefit_plan_data_source(benefit_plan)
         return dataframe
 
     @transaction.atomic

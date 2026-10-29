@@ -55,11 +55,11 @@ class BeneficiaryDataSourceTest(TestCase):
 
         self.assertFalse(moved.get("success"))
 
-    def test_group_plan_checks_the_household_source_by_its_code(self):
+    def test_group_plan_checks_the_household_source(self):
         service = GroupBeneficiaryService(self.user)
-        # No json_ext tag, as for a household without a head; the code carries the source
-        pwp_group = create_group(self.user.username, {"code": "pwp:94104570", "json_ext": {}})
-        msr_group = create_group(self.user.username, {"code": "94104571", "json_ext": {"source_type": "pwp"}})
+        # Same code in both sources: the household's tag decides
+        pwp_group = create_group(self.user.username, {"code": "94104570", "json_ext": {"source_type": "pwp"}})
+        msr_group = create_group(self.user.username, {"code": "94104570", "json_ext": {}})
 
         accepted = service.create({"group_id": pwp_group.id, "benefit_plan_id": self.pwp_group_plan.id, "status": "POTENTIAL"})
         rejected = service.create({"group_id": msr_group.id, "benefit_plan_id": self.pwp_group_plan.id, "status": "POTENTIAL"})
@@ -74,22 +74,15 @@ class BeneficiaryImportDataSourceTest(SimpleTestCase):
 
     apply = staticmethod(BeneficiaryImportService._apply_benefit_plan_data_source)
 
-    def test_default_plan_tags_rows_and_keeps_household_codes(self):
-        df = pd.DataFrame({"first_name": ["A"], "group_code": ["30874398"]})
+    def test_tags_rows_with_the_plan_source_and_keeps_household_codes(self):
+        df = pd.DataFrame({"first_name": ["A", "B"], "group_code": ["30874398", None]})
 
-        result = self.apply(df, SimpleNamespace(json_ext={}))
+        default = self.apply(df, SimpleNamespace(json_ext={}))
+        pwp = self.apply(df, SimpleNamespace(json_ext={"data_source": "pwp"}))
 
-        self.assertEqual(result["source_type"].tolist(), ["ubr"])
-        self.assertEqual(result["group_code"].tolist(), ["30874398"])
-
-    def test_other_source_plan_tags_rows_and_prefixes_household_codes(self):
-        df = pd.DataFrame({"first_name": ["A", "B"], "household_id": ["30874398", None]})
-
-        result = self.apply(df, SimpleNamespace(json_ext={"data_source": "pwp"}), "household_id")
-
-        self.assertEqual(result["source_type"].tolist(), ["pwp", "pwp"])
-        self.assertEqual(result["household_id"].tolist()[0], "pwp:30874398")
-        self.assertTrue(pd.isna(result["household_id"].tolist()[1]))
+        self.assertEqual(default["source_type"].tolist(), ["ubr", "ubr"])
+        self.assertEqual(pwp["source_type"].tolist(), ["pwp", "pwp"])
+        self.assertEqual(pwp["group_code"].tolist()[0], "30874398")
 
     def test_overrides_a_source_type_column_in_the_file(self):
         df = pd.DataFrame({"first_name": ["A"], "source_type": ["ubr"]})

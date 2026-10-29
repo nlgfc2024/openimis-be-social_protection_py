@@ -112,17 +112,13 @@ def validate_not_empty_field(string, field):
 def validate_beneficiary_data_source(benefit_plan_id, record):
     """A plan only takes people or households from its own data source, so programmes on one
     instance never share them (enrollment selection applies the same rule)."""
-    from individual.data_source import DATA_SOURCE_FIELD, DEFAULT_DATA_SOURCE, benefit_plan_data_source, group_data_source
+    from individual.data_source import benefit_plan_data_source, record_data_source
 
     benefit_plan = BenefitPlan.objects.filter(id=benefit_plan_id).first() if benefit_plan_id else None
     if not benefit_plan or record is None:
         return []
     plan_source = benefit_plan_data_source(benefit_plan)
-    # A household's source is in its code; its json_ext is copied from its head and may lack the tag
-    if isinstance(record, Group):
-        record_source = group_data_source(record)
-    else:
-        record_source = (record.json_ext or {}).get(DATA_SOURCE_FIELD) or DEFAULT_DATA_SOURCE
+    record_source = record_data_source(record)
     if record_source == plan_source:
         return []
     return [{"message": _("This record comes from data source '%(record_source)s', but benefit plan "
