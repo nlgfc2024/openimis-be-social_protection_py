@@ -5,12 +5,13 @@ from django.utils.translation import gettext as _
 
 from core.utils import validate_json_schema
 from core.validation import BaseModelValidation, ObjectExistsValidationMixin
+from individual.models import Group, Individual
 from social_protection.benefit_plan_validators import (
     register_benefit_plan_validator,
     run_benefit_plan_validators,
     unregister_benefit_plan_validator,
 )
-from social_protection.models import Beneficiary, BenefitPlan
+from social_protection.models import Beneficiary, BenefitPlan, GroupBeneficiary
 from social_protection.phase_defaults import advanced_criteria_validation_errors
 
 
@@ -128,9 +129,57 @@ def validate_not_empty_field(string, field):
     return []
 
 
+def validate_beneficiary_data_source(benefit_plan_id, record):
+    """A plan only takes people or households from its own data source, so programmes on one
+    instance never share them (enrollment selection applies the same rule)."""
+    from individual.data_source import benefit_plan_data_source, record_data_source
+
+    benefit_plan = BenefitPlan.objects.filter(id=benefit_plan_id).first() if benefit_plan_id else None
+    if not benefit_plan or record is None:
+        return []
+    plan_source = benefit_plan_data_source(benefit_plan)
+    record_source = record_data_source(record)
+    if record_source == plan_source:
+        return []
+    return [{"message": _("This record comes from data source '%(record_source)s', but benefit plan "
+                          "'%(plan)s' only takes data from '%(plan_source)s'.") % {
+        "record_source": record_source, "plan": benefit_plan.code, "plan_source": plan_source,
+    }}]
+
+
+def _validate_beneficiary_source(data, model, record_model, record_field):
+    existing = model.objects.filter(id=data.get("id")).first() if data.get("id") else None
+    benefit_plan_id = data.get("benefit_plan_id") or (existing.benefit_plan_id if existing else None)
+    record_id = data.get(f"{record_field}_id") or (getattr(existing, f"{record_field}_id") if existing else None)
+    record = record_model.objects.filter(id=record_id).first() if record_id else None
+    errors = validate_beneficiary_data_source(benefit_plan_id, record)
+    if errors:
+        raise ValidationError(errors)
+
+
 class BeneficiaryValidation(BaseModelValidation):
     OBJECT_TYPE = Beneficiary
+
+    @classmethod
+    def validate_create(cls, user, **data):
+        _validate_beneficiary_source(data, Beneficiary, Individual, "individual")
+        super().validate_create(user, **data)
+
+    @classmethod
+    def validate_update(cls, user, **data):
+        _validate_beneficiary_source(data, Beneficiary, Individual, "individual")
+        super().validate_update(user, **data)
 
 
 class GroupBeneficiaryValidation(BaseModelValidation):
     OBJECT_TYPE = Beneficiary
+
+    @classmethod
+    def validate_create(cls, user, **data):
+        _validate_beneficiary_source(data, GroupBeneficiary, Group, "group")
+        super().validate_create(user, **data)
+
+    @classmethod
+    def validate_update(cls, user, **data):
+        _validate_beneficiary_source(data, GroupBeneficiary, Group, "group")
+        super().validate_update(user, **data)
