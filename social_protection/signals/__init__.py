@@ -9,9 +9,6 @@ from social_protection.models import BenefitPlan, Beneficiary, BeneficiaryStatus
 from social_protection.signals.on_validation_import_valid_items import on_task_complete_import_validated, \
     on_task_resolve
 
-from social_protection.signals.on_confirm_enrollment_of_individual import on_confirm_enrollment_of_individual
-from social_protection.signals.on_confirm_enrollment_of_group import on_confirm_enrollment_of_group
-
 from tasks_management.models import Task
 from tasks_management.services import on_task_complete_service_handler
 
@@ -72,16 +69,6 @@ def bind_service_signals():
     bind_service_signal(
         'task_service.resolve_task',
         on_task_resolve,
-        bind_type=ServiceSignalBindType.AFTER
-    )
-    bind_service_signal(
-        'individual_service.select_individuals_to_benefit_plan',
-        on_confirm_enrollment_of_individual,
-        bind_type=ServiceSignalBindType.AFTER
-    )
-    bind_service_signal(
-        'group_service.select_groups_to_benefit_plan',
-        on_confirm_enrollment_of_group,
         bind_type=ServiceSignalBindType.AFTER
     )
     bind_service_signal(

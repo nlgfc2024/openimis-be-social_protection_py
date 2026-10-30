@@ -1,5 +1,4 @@
 import logging
-import uuid
 import random
 import string
 from django.contrib.postgres.aggregates import ArrayAgg
@@ -19,7 +18,6 @@ from individual.data_source import DATA_SOURCE_FIELD, data_source_expression, da
 from individual.services import GroupService
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
-    Beneficiary,
     BenefitPlanDataUploadRecords,
     BenefitPlan,
     GroupBeneficiary
@@ -28,7 +26,6 @@ from tasks_management.apps import TasksManagementConfig
 from tasks_management.models import Task
 from tasks_management.services import TaskService
 from workflow.services import WorkflowService
-from social_protection.utils import bulk_create_in_batches
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +305,6 @@ class IndividualItemsUploadTaskCompletionEvent(BaseGroupColumnAggregationClass):
 
 def on_task_complete_action(business_event, **kwargs):
     from social_protection.apps import SocialProtectionConfig
-    from social_protection.services import BeneficiaryImportService
 
     result = kwargs.get('result')
     if not result or not result.get('success'):
@@ -346,56 +342,6 @@ def on_task_complete_action(business_event, **kwargs):
                 upload_record.benefit_plan,
                 User.objects.get(id=data['user']['id'])
             ).run_workflow()
-        elif business_event == SocialProtectionConfig.validation_enrollment:
-            individuals_to_enroll = Individual.objects.filter(
-                individualdatasource__upload_id=data['task']['json_ext']['data_upload_id']
-            )
-            user = User.objects.get(id=data['user']['id'])
-            new_beneficiaries = (
-                Beneficiary(
-                    individual=individual,
-                    benefit_plan_id=data['task']['json_ext']['benefit_plan_id'],
-                    status=data['task']['json_ext']['beneficiary_status'],
-                    json_ext=individual.json_ext,
-                    user_created=user,
-                    user_updated=user,
-                    uuid=uuid.uuid4(),
-                ) for individual in individuals_to_enroll.iterator(chunk_size=1000)
-            )
-            bulk_create_in_batches(Beneficiary.objects, new_beneficiaries)
-            BeneficiaryImportService(user).synchronize_data_for_reporting(
-                upload_id=data['task']['json_ext']['data_upload_id'],
-                benefit_plan=data['task']['json_ext']['benefit_plan_id']
-            )
-            return
-        elif business_event == SocialProtectionConfig.validation_group_enrollment:
-            head_groups_to_enroll = GroupIndividual.objects.filter(
-                is_deleted=False,
-                role=GroupIndividual.Role.HEAD,
-                individual__individualdatasource__upload_id=(
-                    data['task']['json_ext']['data_upload_id']
-                ),
-            ).select_related('group', 'individual').distinct()
-            user = User.objects.get(id=data['user']['id'])
-            def new_group_beneficiaries():
-                for group_individual_head in head_groups_to_enroll.iterator(
-                    chunk_size=1000
-                ):
-                    head_individual = group_individual_head.individual
-                    yield GroupBeneficiary(
-                        group=group_individual_head.group,
-                        benefit_plan_id=data['task']['json_ext']['benefit_plan_id'],
-                        status=data['task']['json_ext']['beneficiary_status'],
-                        json_ext=head_individual.json_ext,
-                        user_created=user,
-                        user_updated=user,
-                        uuid=uuid.uuid4(),
-                    )
-            bulk_create_in_batches(
-                GroupBeneficiary.objects,
-                new_group_beneficiaries(),
-            )
-            return
         elif business_event == SocialProtectionConfig.validation_import_group_valid_items:
             BaseGroupColumnAggregationClass.group_data_sources_into_entities(
                 upload_record.data_upload.id, User.objects.get(id=data['user']['id']), upload_record.benefit_plan
@@ -416,8 +362,6 @@ def on_task_complete_import_validated(**kwargs):
     from social_protection.apps import SocialProtectionConfig
     on_task_complete_action(SocialProtectionConfig.validation_import_valid_items, **kwargs)
     on_task_complete_action(SocialProtectionConfig.validation_upload_valid_items, **kwargs)
-    on_task_complete_action(SocialProtectionConfig.validation_enrollment, **kwargs)
-    on_task_complete_action(SocialProtectionConfig.validation_group_enrollment, **kwargs)
     on_task_complete_action(SocialProtectionConfig.validation_import_group_valid_items, **kwargs)
 
 

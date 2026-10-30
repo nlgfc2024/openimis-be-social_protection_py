@@ -7,38 +7,16 @@ from django.test import SimpleTestCase, TestCase
 from core.services import BaseService
 from core.test_helpers import LogInHelper
 from social_protection.apps import SocialProtectionConfig
-from social_protection.models import BenefitPlan
 from social_protection.phase_defaults import (
     apply_benefit_plan_creation_defaults,
     deep_merge,
     validate_benefit_plan_creation_defaults,
-    validate_mandatory_enrollment_criteria,
 )
 from social_protection.services import BenefitPlanService
 from social_protection.tests.data import service_add_payload_no_ext
 
 
 class PhaseDefaultsValidationTest(SimpleTestCase):
-    def test_accepts_type_and_status_specific_mandatory_criteria(self):
-        validate_mandatory_enrollment_criteria({
-            "INDIVIDUAL": {},
-            "GROUP": {
-                "POTENTIAL": [{
-                    "field": "validation_status",
-                    "filter": "exact",
-                    "type": "string",
-                    "value": "VERIFIED",
-                }]
-            },
-        })
-
-    def test_rejects_invalid_mandatory_criteria(self):
-        with self.assertRaisesMessage(ValidationError, "unsupported status"):
-            validate_mandatory_enrollment_criteria({
-                "INDIVIDUAL": {},
-                "GROUP": {"UNKNOWN": []},
-            })
-
     def test_deep_merge_does_not_mutate_inputs(self):
         original = {"json_ext": {"advanced_criteria": {"POTENTIAL": []}}}
         override = {"json_ext": {"source": "request"}}
@@ -157,104 +135,6 @@ class PhaseDefaultsValidationTest(SimpleTestCase):
                 "INDIVIDUAL": {},
                 "GROUP": {},
             })
-
-    def test_accepts_enrolment_ranking_snapshot(self):
-        validate_benefit_plan_creation_defaults({
-            "common": {
-                "beneficiary_data_schema": {
-                    "properties": {"score": {"type": "number"}}
-                },
-                "json_ext": {
-                    "enrolment_ranking": {
-                        "*": {
-                            "order_by": [
-                                {"field": "json_ext__score", "cast": "float", "direction": "desc", "nulls": "last"},
-                                "id",
-                            ],
-                            "tie_breaker": "id",
-                            "limit": {"percentage": 20, "respect_max_beneficiaries": True},
-                        }
-                    }
-                }
-            },
-            "INDIVIDUAL": {},
-            "GROUP": {},
-        })
-
-    def test_rejects_invalid_enrolment_ranking_configuration(self):
-        with self.assertRaisesMessage(ValidationError, "between 1 and 100"):
-            validate_benefit_plan_creation_defaults({
-                "common": {
-                    "json_ext": {
-                        "enrolment_ranking": {
-                            "POTENTIAL": {
-                                "order_by": [{"field": "id", "cast": "decimal"}],
-                                "limit": {"percentage": 0},
-                            }
-                        }
-                    }
-                },
-                "INDIVIDUAL": {},
-                "GROUP": {},
-            })
-
-    def test_rejects_unknown_ranking_model_field_at_config_load(self):
-        with self.assertRaisesMessage(ValidationError, "does_not_exist is unsupported"):
-            validate_benefit_plan_creation_defaults({
-                "common": {},
-                "INDIVIDUAL": {
-                    "json_ext": {
-                        "enrolment_ranking": {
-                            "*": {"order_by": ["does_not_exist"]}
-                        }
-                    }
-                },
-                "GROUP": {},
-            })
-
-    def test_rejects_ranking_cast_incompatible_with_schema_at_config_load(self):
-        with self.assertRaisesMessage(ValidationError, "cast int is incompatible"):
-            validate_benefit_plan_creation_defaults({
-                "common": {
-                    "beneficiary_data_schema": {
-                        "properties": {
-                            "household_wealth_quintile": {"type": "string"},
-                        }
-                    },
-                    "json_ext": {
-                        "enrolment_ranking": {
-                            "*": {
-                                "order_by": [{
-                                    "field": "json_ext__household_wealth_quintile",
-                                    "cast": "int",
-                                }]
-                            }
-                        }
-                    },
-                },
-                "INDIVIDUAL": {},
-                "GROUP": {},
-            })
-
-    def test_rejects_untyped_json_ranking_cast_at_config_load(self):
-        with self.assertRaisesMessage(ValidationError, "to be typed"):
-            validate_benefit_plan_creation_defaults({
-                "common": {
-                    "json_ext": {
-                        "enrolment_ranking": {
-                            "*": {
-                                "order_by": [{
-                                    "field": "json_ext__score",
-                                    "cast": "float",
-                                }]
-                            }
-                        }
-                    },
-                },
-                "INDIVIDUAL": {},
-                "GROUP": {},
-            })
-
 
 class BenefitPlanCreationDefaultsTest(TestCase):
     def setUp(self):

@@ -7,7 +7,6 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
 from django.db.models import Q
-from django.utils.translation import gettext as _
 from pandas import DataFrame
 
 from calculation.services import get_calculation_object

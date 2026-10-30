@@ -5,7 +5,6 @@ from django.contrib.auth.models import AnonymousUser
 from django.db.models import Q
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
-import graphene_django_optimizer as gql_optimizer
 import django_filters
 
 from contribution_plan.models import PaymentPlan
@@ -29,6 +28,19 @@ def _have_permissions(user, permission):
     if not user.id:
         return False
     return user.has_perms(permission)
+
+
+def _saved_advanced_criteria(benefit_plan):
+    json_ext = benefit_plan.json_ext or {}
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    if not isinstance(json_ext, dict):
+        return {}
+    saved = json_ext.get("advanced_criteria", {}) or {}
+    return saved if isinstance(saved, (dict, list)) else {}
 
 
 class JsonExtMixin:
@@ -66,6 +78,7 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     has_payment_plans = graphene.Boolean()
     advanced_criteria = graphene.JSONString()
     enrolment_ranking = graphene.JSONString()
+    updates_require_approval = graphene.Boolean()
 
     class Meta:
         model = BenefitPlan
@@ -105,15 +118,7 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     def resolve_advanced_criteria(self, info):
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
-            json_ext = self.json_ext or {}
-            if isinstance(json_ext, str):
-                try:
-                    json_ext = json.loads(json_ext)
-                except (TypeError, json.JSONDecodeError):
-                    return {}
-            if isinstance(json_ext, dict):
-                return json_ext.get("advanced_criteria", {})
-            return {}
+            return _saved_advanced_criteria(self)
         return None
 
     def resolve_enrolment_ranking(self, info):
@@ -129,6 +134,12 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
                 return json_ext.get("enrolment_ranking", {})
             return {}
         return None
+
+    def resolve_updates_require_approval(self, info):
+        if _have_permissions(info.context.user, SocialProtectionConfig.gql_benefit_plan_criteria_search_perms):
+            return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
+        return None
+
 
 
 class BeneficiarySharedFilterMixin:

@@ -13,6 +13,7 @@ from social_protection.gql_queries import BenefitPlanGQLType
 
 
 class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
+
     def test_criteria_only_update_preserves_hidden_json_ext(self):
         user = Mock()
         user.has_perms.return_value = False
@@ -95,6 +96,21 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         result = BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info)
 
         self.assertEqual(result, {"POTENTIAL": []})
+
+    def test_saved_legacy_criteria_shape_is_not_changed(self):
+        user = Mock(id=1)
+        user.has_perms.return_value = True
+        saved = [{"field": "district", "value": "North"}]
+        benefit_plan = SimpleNamespace(
+            type="GROUP",
+            json_ext={"advanced_criteria": saved},
+        )
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        self.assertEqual(
+            BenefitPlanGQLType.resolve_advanced_criteria(benefit_plan, info),
+            saved,
+        )
 
     def test_criteria_resolver_hides_criteria_without_permission(self):
         user = Mock(id=1)
