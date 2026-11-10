@@ -1,12 +1,15 @@
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
+from social_protection.apps import SocialProtectionConfig
 from social_protection.gql_mutations import (
+    UpdateBenefitPlanMutation,
     check_criteria_perms,
     check_perms_for_field,
+    drop_retired_json_ext,
     preserve_hidden_json_ext,
 )
 from social_protection.gql_queries import BenefitPlanGQLType
@@ -33,19 +36,59 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
             {"*": {"order_by": ["id"]}},
         )
 
-    def test_ranking_change_requires_criteria_permission(self):
+    def test_ranking_is_no_longer_a_criteria_key(self):
         user = Mock()
         user.has_perms.return_value = False
         current = SimpleNamespace(
             json_ext={"enrolment_ranking": {"*": {"order_by": ["id"]}}}
         )
-        with self.assertRaisesMessage(ValidationError, "lack_of_criteria_perms"):
-            check_criteria_perms(
-                user,
-                ["171006"],
-                {"json_ext": {"enrolment_ranking": {"*": {"order_by": ["-id"]}}}},
-                current,
+        check_criteria_perms(
+            user,
+            ["171006"],
+            {"json_ext": {"enrolment_ranking": {"*": {"order_by": ["-id"]}}}},
+            current,
+        )
+
+    def test_saving_json_ext_drops_a_retired_ranking(self):
+        data = {"json_ext": {
+            "advanced_criteria": {"ACTIVE": []},
+            "enrolment_ranking": {"*": {"order_by": ["id"]}},
+        }}
+        drop_retired_json_ext(data)
+        self.assertEqual(data["json_ext"], {"advanced_criteria": {"ACTIVE": []}})
+
+        as_text = {"json_ext": '{"enrolment_ranking": {}, "other": 1}'}
+        drop_retired_json_ext(as_text)
+        self.assertEqual(as_text["json_ext"], {"other": 1})
+
+        untouched = {"name": "Phase"}
+        drop_retired_json_ext(untouched)
+        self.assertEqual(untouched, {"name": "Phase"})
+
+    @patch("social_protection.gql_mutations.BenefitPlanService")
+    @patch("social_protection.gql_mutations.BenefitPlan")
+    def test_update_clears_a_ranking_stored_on_the_phase(self, benefit_plan, service):
+        user = Mock()
+        user.has_perms.return_value = False
+        benefit_plan.objects.filter.return_value.first.return_value = SimpleNamespace(
+            json_ext={
+                "advanced_criteria": {"POTENTIAL": []},
+                "enrolment_ranking": {"*": {"order_by": ["id"]}},
+                "private_value": "preserved",
+            },
+        )
+        service.return_value.update.return_value = {"success": True}
+
+        with patch.object(SocialProtectionConfig, "gql_check_benefit_plan_update", False):
+            UpdateBenefitPlanMutation._mutate(
+                user, id="1", json_ext={"advanced_criteria": {"ACTIVE": []}},
             )
+
+        saved = service.return_value.update.call_args.args[0]["json_ext"]
+        self.assertEqual(saved, {
+            "advanced_criteria": {"ACTIVE": []},
+            "private_value": "preserved",
+        })
 
     def test_empty_schema_still_requires_permission(self):
         user = Mock()
