@@ -42,12 +42,18 @@ def _json_object(value):
     return value if isinstance(value, dict) else None
 
 
+# json_ext keys only users with the Benefit Plan criteria rights may change.
+CRITERIA_KEYS = {"advanced_criteria"}
+# Rankings moved to the Enrolment module's programme profiles. A Phase no longer
+# stores one, so the key is dropped whenever a Phase's json_ext is saved.
+RETIRED_JSON_EXT_KEYS = {"enrolment_ranking"}
+
+
 def _submitted_criteria_config(data):
     if "json_ext" not in data:
         return False, None
     json_ext = _json_object(data.get("json_ext"))
-    criteria_keys = {"advanced_criteria", "enrolment_ranking"}
-    submitted_keys = criteria_keys.intersection(json_ext or {})
+    submitted_keys = CRITERIA_KEYS.intersection(json_ext or {})
     if json_ext is None or not submitted_keys:
         return False, None
     return True, {key: json_ext[key] for key in submitted_keys}
@@ -69,8 +75,7 @@ def check_criteria_perms(user, permission, data, current=None):
 def preserve_hidden_json_ext(user, data, current):
     """Merge criteria-only updates without erasing undisclosed extension data."""
     submitted = _json_object(data.get("json_ext"))
-    criteria_keys = {"advanced_criteria", "enrolment_ranking"}
-    submitted_keys = criteria_keys.intersection(submitted or {})
+    submitted_keys = CRITERIA_KEYS.intersection(submitted or {})
     if submitted is None or not submitted_keys or not current:
         return
     if user.has_perms(SocialProtectionConfig.gql_schema_update_perms):
@@ -79,6 +84,20 @@ def preserve_hidden_json_ext(user, data, current):
     data["json_ext"] = {
         **current_json_ext,
         **{key: submitted[key] for key in submitted_keys},
+    }
+
+
+def drop_retired_json_ext(data):
+    """Remove retired keys from the json_ext being saved, submitted or merged.
+
+    Saving a Phase that still stores an enrolment_ranking therefore clears it.
+    """
+    json_ext = _json_object(data.get("json_ext"))
+    if json_ext is None or not RETIRED_JSON_EXT_KEYS.intersection(json_ext):
+        return
+    data["json_ext"] = {
+        key: value for key, value in json_ext.items()
+        if key not in RETIRED_JSON_EXT_KEYS
     }
 
 
@@ -175,6 +194,7 @@ class CreateBenefitPlanMutation(
         if "client_mutation_label" in data:
             data.pop('client_mutation_label')
 
+        drop_retired_json_ext(data)
         service = BenefitPlanService(user)
         res = service.create(data)
         if client_mutation_id and res['success']:
@@ -226,6 +246,7 @@ class UpdateBenefitPlanMutation(
 
         current = BenefitPlan.objects.filter(id=data.get("id")).first()
         preserve_hidden_json_ext(user, data, current)
+        drop_retired_json_ext(data)
 
         service = BenefitPlanService(user)
         if SocialProtectionConfig.gql_check_benefit_plan_update:
