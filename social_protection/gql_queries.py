@@ -69,6 +69,7 @@ class JsonExtMixin:
         return {
             key: value
             for key, value in json_ext.items()
+            # enrolment_ranking is retired but may still be stored on a Phase.
             if key not in {"advanced_criteria", "enrolment_ranking"}
         }
 
@@ -77,7 +78,6 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
     has_payment_plans = graphene.Boolean()
     advanced_criteria = graphene.JSONString()
-    enrolment_ranking = graphene.JSONString()
     updates_require_approval = graphene.Boolean()
 
     class Meta:
@@ -119,20 +119,6 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
             return _saved_advanced_criteria(self)
-        return None
-
-    def resolve_enrolment_ranking(self, info):
-        perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
-        if _have_permissions(info.context.user, perms):
-            json_ext = self.json_ext or {}
-            if isinstance(json_ext, str):
-                try:
-                    json_ext = json.loads(json_ext)
-                except (TypeError, json.JSONDecodeError):
-                    return {}
-            if isinstance(json_ext, dict):
-                return json_ext.get("enrolment_ranking", {})
-            return {}
         return None
 
     def resolve_updates_require_approval(self, info):

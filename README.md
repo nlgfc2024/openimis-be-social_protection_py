@@ -61,11 +61,14 @@ It is dedicated to be deployed as a module of [openimis-be_py](https://github.co
 * gql_benefit_plan_criteria_update_perms: required rights to explicitly create, change, or clear `json_ext.advanced_criteria` (default: ["171006"])
 * benefit_plan_creation_defaults: validated defaults copied into each new Benefit Plan. Values from `common` are recursively merged with `INDIVIDUAL` or `GROUP` values and then with authorized request values. Supported fields are `beneficiary_data_schema`, `json_ext`, `max_beneficiaries`, `ceiling_per_beneficiary`, `institution`, and `description`. Configuration changes apply only to future Benefit Plans.
 
-`advancedCriteria` and `enrolmentRanking` expose the corresponding Phase data
-to callers with the Benefit Plan criteria read permission. Changes to either
-field require the criteria update permission. The optional Enrolment module
-owns interpretation and validation of enrolment ranking through the shared
-Benefit Plan validator registry.
+`advancedCriteria` exposes the Phase's criteria to callers with the Benefit Plan
+criteria read permission, and changing them requires the criteria update
+permission.
+
+A Phase no longer holds an enrolment ranking: rankings are set in the Enrolment
+module's programme profiles. `enrolmentRanking` has been removed from the Phase
+type, and `enrolment_ranking` is dropped from `json_ext` whenever a Phase is
+created or updated, so saving a Phase clears a ranking stored on it earlier.
 
 * gql_check_benefit_plan_update: specifies whether Benefit Plan update should be updated using task based approval (default: True)
 * gql_check_beneficiary_crud: specifies whether Beneficiary CRUD should be use task based approval (default: True)
