@@ -65,6 +65,25 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         drop_retired_json_ext(untouched)
         self.assertEqual(untouched, {"name": "Phase"})
 
+    def test_an_update_without_json_ext_drops_the_stored_ranking(self):
+        current = SimpleNamespace(json_ext={
+            "enrolment_ranking": {"*": {"order_by": ["id"]}},
+            "private_value": "preserved",
+        })
+        data = {"name": "Phase"}
+        drop_retired_json_ext(data, current)
+        self.assertEqual(data["json_ext"], {"private_value": "preserved"})
+
+        without_ranking = {"name": "Phase"}
+        drop_retired_json_ext(
+            without_ranking, SimpleNamespace(json_ext={"private_value": "preserved"}),
+        )
+        self.assertEqual(without_ranking, {"name": "Phase"})
+
+        sent = {"json_ext": {"other": 1}}
+        drop_retired_json_ext(sent, current)
+        self.assertEqual(sent["json_ext"], {"other": 1})
+
     @patch("social_protection.gql_mutations.BenefitPlanService")
     @patch("social_protection.gql_mutations.BenefitPlan")
     def test_update_clears_a_ranking_stored_on_the_phase(self, benefit_plan, service):
@@ -87,6 +106,29 @@ class BenefitPlanCriteriaPermissionTest(SimpleTestCase):
         saved = service.return_value.update.call_args.args[0]["json_ext"]
         self.assertEqual(saved, {
             "advanced_criteria": {"ACTIVE": []},
+            "private_value": "preserved",
+        })
+
+    @patch("social_protection.gql_mutations.BenefitPlanService")
+    @patch("social_protection.gql_mutations.BenefitPlan")
+    def test_update_without_json_ext_clears_a_stored_ranking(self, benefit_plan, service):
+        user = Mock()
+        user.has_perms.return_value = False
+        benefit_plan.objects.filter.return_value.first.return_value = SimpleNamespace(
+            json_ext={
+                "advanced_criteria": {"POTENTIAL": []},
+                "enrolment_ranking": {"*": {"order_by": ["id"]}},
+                "private_value": "preserved",
+            },
+        )
+        service.return_value.create_update_task.return_value = {"success": True}
+
+        with patch.object(SocialProtectionConfig, "gql_check_benefit_plan_update", True):
+            UpdateBenefitPlanMutation._mutate(user, id="1", name="Phase")
+
+        saved = service.return_value.create_update_task.call_args.args[0]["json_ext"]
+        self.assertEqual(saved, {
+            "advanced_criteria": {"POTENTIAL": []},
             "private_value": "preserved",
         })
 

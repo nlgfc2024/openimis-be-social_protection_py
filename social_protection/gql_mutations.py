@@ -87,12 +87,16 @@ def preserve_hidden_json_ext(user, data, current):
     }
 
 
-def drop_retired_json_ext(data):
+def drop_retired_json_ext(data, current=None):
     """Remove retired keys from the json_ext being saved, submitted or merged.
 
-    Saving a Phase that still stores an enrolment_ranking therefore clears it.
+    An update that sends no json_ext still clears them from the stored one, so
+    saving a Phase clears a stored enrolment_ranking whatever the user can see.
     """
-    json_ext = _json_object(data.get("json_ext"))
+    if "json_ext" in data:
+        json_ext = _json_object(data.get("json_ext"))
+    else:
+        json_ext = _json_object(current.json_ext) if current else None
     if json_ext is None or not RETIRED_JSON_EXT_KEYS.intersection(json_ext):
         return
     data["json_ext"] = {
@@ -246,7 +250,7 @@ class UpdateBenefitPlanMutation(
 
         current = BenefitPlan.objects.filter(id=data.get("id")).first()
         preserve_hidden_json_ext(user, data, current)
-        drop_retired_json_ext(data)
+        drop_retired_json_ext(data, current)
 
         service = BenefitPlanService(user)
         if SocialProtectionConfig.gql_check_benefit_plan_update:
