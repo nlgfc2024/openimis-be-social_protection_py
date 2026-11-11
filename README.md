@@ -68,7 +68,8 @@ permission.
 A Phase no longer holds an enrolment ranking: rankings are set in the Enrolment
 module's programme profiles. `enrolmentRanking` has been removed from the Phase
 type, and `enrolment_ranking` is dropped from `json_ext` whenever a Phase is
-created or updated, so saving a Phase clears a ranking stored on it earlier.
+created or updated, even when the update sends no `json_ext`, so saving a Phase
+clears a ranking stored on it earlier.
 
 * gql_check_benefit_plan_update: specifies whether Benefit Plan update should be updated using task based approval (default: True)
 * gql_check_beneficiary_crud: specifies whether Beneficiary CRUD should be use task based approval (default: True)
