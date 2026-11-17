@@ -19,7 +19,9 @@ from social_protection.models import (
     BenefitPlan,
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
+    UserBenefitPlanAccess,
 )
+from core.gql_queries import UserGQLType
 
 
 def _have_permissions(user, permission):
@@ -125,6 +127,21 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         if _have_permissions(info.context.user, SocialProtectionConfig.gql_benefit_plan_criteria_search_perms):
             return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
         return None
+
+
+class UserBenefitPlanAccessGQLType(DjangoObjectType):
+    uuid = graphene.String(source="uuid")
+    user = graphene.Field(UserGQLType)
+
+    class Meta:
+        model = UserBenefitPlanAccess
+        fields = ("id", "user", "date_created")
+        interfaces = (graphene.relay.Node,)
+        filter_fields = {
+            "id": ["exact"],
+            "user__username": ["exact", "icontains"],
+        }
+        connection_class = ExtendedConnection
 
 
 
