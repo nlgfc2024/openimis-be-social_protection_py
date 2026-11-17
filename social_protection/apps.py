@@ -2,6 +2,7 @@ import copy
 import logging
 
 from django.apps import AppConfig
+from django.core.exceptions import ValidationError
 
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
@@ -16,6 +17,9 @@ DEFAULT_CONFIG = {
     "gql_benefit_plan_update_perms": ["160003"],
     "gql_benefit_plan_delete_perms": ["160004"],
     "gql_benefit_plan_close_perms": ["160005"],
+    "enable_benefit_plan_access_control": False,
+    "gql_benefit_plan_all_access_perms": ["160006"],
+    "gql_benefit_plan_assignment_manage_perms": ["160007"],
     "gql_beneficiary_search_perms": ["170001"],
     "gql_beneficiary_create_perms": ["170002"],
     "gql_beneficiary_update_perms": ["170003"],
@@ -82,6 +86,9 @@ class SocialProtectionConfig(AppConfig):
     gql_benefit_plan_update_perms = None
     gql_benefit_plan_delete_perms = None
     gql_benefit_plan_close_perms = None
+    enable_benefit_plan_access_control = None
+    gql_benefit_plan_all_access_perms = None
+    gql_benefit_plan_assignment_manage_perms = None
     gql_beneficiary_search_perms = None
     gql_beneficiary_create_perms = None
     gql_beneficiary_update_perms = None
@@ -212,9 +219,30 @@ class SocialProtectionConfig(AppConfig):
 
     @classmethod
     def __validate_config(cls, cfg):
+        errors = []
+        if not isinstance(cfg.get("enable_benefit_plan_access_control"), bool):
+            errors.append("enable_benefit_plan_access_control must be boolean.")
+        for field in (
+            "gql_benefit_plan_all_access_perms",
+            "gql_benefit_plan_assignment_manage_perms",
+        ):
+            permissions = cfg.get(field)
+            if (
+                not isinstance(permissions, list)
+                or not permissions
+                or any(
+                    not isinstance(permission, str) or not permission.strip()
+                    for permission in permissions
+                )
+            ):
+                errors.append(
+                    f"{field} must be a non-empty list of permission strings."
+                )
         validate_benefit_plan_creation_defaults(
             cfg.get("benefit_plan_creation_defaults", {})
         )
+        if errors:
+            raise ValidationError({"config": errors})
 
     def __register_masking_class(cls):
         from social_protection.data_masking import (

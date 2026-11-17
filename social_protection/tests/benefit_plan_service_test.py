@@ -1,10 +1,12 @@
 import copy
 import uuid
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.test import TestCase
 
-from social_protection.models import BenefitPlan
+from social_protection.models import BenefitPlan, UserBenefitPlanAccess
 from social_protection.services import BenefitPlanService
 from social_protection.tests.data import (
     service_add_payload,
@@ -39,6 +41,24 @@ class BenefitPlanServiceTest(TestCase):
         uuid = result.get('data', {}).get('uuid', None)
         query = self.query_all.filter(uuid=uuid)
         self.assertEqual(query.count(), 1)
+        self.assertTrue(UserBenefitPlanAccess.objects.filter(
+            user=self.user,
+            benefit_plan_id=uuid,
+            is_deleted=False,
+        ).exists())
+
+    def test_failed_creator_assignment_rolls_back_benefit_plan(self):
+        with patch.object(
+            UserBenefitPlanAccess,
+            "save",
+            side_effect=IntegrityError("assignment failed"),
+        ):
+            result = self.service.create(service_add_payload)
+
+        self.assertFalse(result.get("success", True))
+        self.assertFalse(
+            self.query_all.filter(code=service_add_payload["code"]).exists()
+        )
 
     def test_add_benefit_plan_no_ext(self):
         result = self.service.create(service_add_payload_no_ext)

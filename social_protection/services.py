@@ -24,6 +24,7 @@ from social_protection.models import (
     Beneficiary,
     BenefitPlanDataUploadRecords,
     GroupBeneficiary,
+    UserBenefitPlanAccess,
 )
 from social_protection.phase_defaults import (
     apply_benefit_plan_creation_defaults,
@@ -73,7 +74,26 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
                 raise ValidationError({
                     "code": ["Unable to generate a unique benefit plan code, please retry."]
                 })
-        return super().create(data_with_defaults)
+        try:
+            with transaction.atomic():
+                result = super().create(data_with_defaults)
+                if not result.get("success", False):
+                    return result
+
+                benefit_plan = BenefitPlan.objects.get(
+                    id=result["data"]["uuid"]
+                )
+                UserBenefitPlanAccess(
+                    user=self.user,
+                    benefit_plan=benefit_plan,
+                ).save(user=self.user)
+                return result
+        except Exception as exc:
+            return output_exception(
+                model_name=self.OBJECT_TYPE.__name__,
+                method="create",
+                exception=exc,
+            )
 
     @register_service_signal('benefit_plan_service.update')
     def update(self, obj_data):
