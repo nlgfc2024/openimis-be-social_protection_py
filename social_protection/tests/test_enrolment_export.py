@@ -16,6 +16,7 @@ from location.models import Location
 from social_protection.export_mixin import (
     ENROLMENT_EXPORT_COLUMNS,
     ExportableSocialProtectionQueryMixin,
+    KYC_EXPORT_COLUMNS,
 )
 from social_protection.models import Beneficiary, BenefitPlan, GroupBeneficiary
 from social_protection.schema import Query
@@ -31,6 +32,31 @@ class EnrolmentExportWorkbookTest(SimpleTestCase):
         self.assertIn("date_of_birth", headers)
         self.assertIn("project_code", headers)
         self.assertIn("relationship", headers)
+        self.assertIn("catchment_name", headers)
+        self.assertIn("account_number", headers)
+        self.assertIn("account_name", headers)
+        self.assertIn("bank", headers)
+
+    def test_kyc_workbook_has_only_kyc_columns(self):
+        workbook_content = ExportableSocialProtectionQueryMixin._enrolment_workbook(
+            [], KYC_EXPORT_COLUMNS,
+        )
+        worksheet = load_workbook(BytesIO(workbook_content))["Enrolments"]
+        headers = [cell.value for cell in next(worksheet.iter_rows(max_row=1))]
+
+        self.assertEqual(headers, list(KYC_EXPORT_COLUMNS))
+        self.assertIn("phase_name", headers)
+        self.assertNotIn("project_code", headers)
+        self.assertNotIn("enrolment_type", headers)
+
+    def test_kyc_account_number_cells_are_text_formatted(self):
+        workbook_content = ExportableSocialProtectionQueryMixin._enrolment_workbook(
+            [{"account_number": "00012345"}], KYC_EXPORT_COLUMNS,
+        )
+        worksheet = load_workbook(BytesIO(workbook_content))["Enrolments"]
+        account_number_column = list(KYC_EXPORT_COLUMNS).index("account_number") + 1
+
+        self.assertEqual(worksheet.cell(2, account_number_column).number_format, "@")
 
 
 @override_settings(ROW_SECURITY=False, MODE='dev')
