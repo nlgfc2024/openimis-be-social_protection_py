@@ -66,6 +66,7 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             GroupBeneficiaryProjectEnrollment if is_group_export
             else BeneficiaryProjectEnrollment
         )
+        enrollment_beneficiary_field = "group_beneficiary" if is_group_export else "beneficiary"
         enrolment_prefetch = Prefetch(
             "project_enrollments",
             queryset=enrollment_model.objects.filter(is_deleted=False).select_related(
@@ -86,12 +87,13 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             row["project_id"]: row["count"]
             for row in enrollment_model.objects.filter(
                 is_deleted=False,
-                **{f"{relation}_beneficiary_id__in": export_queryset.order_by().values("pk")},
+                **{f"{enrollment_beneficiary_field}_id__in": export_queryset.order_by().values("pk")},
             ).values("project_id").annotate(count=Count("id"))
         }
         queryset = queryset.select_related(
             f"{relation}__location__parent__parent__parent"
         ).prefetch_related(*prefetches)
+
         def build_rows(records):
             record_locations = {}
             record_location_ids = {"D": set(), "W": set()}
@@ -205,7 +207,10 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                             "project_name": project.name if project else "",
                             "target_HHs": project.target_beneficiaries if project else "",
                             "enrolled_HHs": enrolled_by_project.get(project.id, "") if project else "",
-                            "enrolment_date": enrolment.date_created.date().isoformat() if enrolment and enrolment.date_created else "",
+                            "enrolment_date": (
+                                enrolment.date_created.date().isoformat()
+                                if enrolment and enrolment.date_created else ""
+                            ),
                             "form_number": (
                                 get_household_form_number(identity, person) or identity.code
                                 if is_group_export else record_json.get(
@@ -252,7 +257,7 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
 
         def exporter(cls, self, info, **kwargs):
             custom_filters = kwargs.pop("customFilters", None)
-            export_fields = [cls._adjust_notation(f) for f in kwargs.pop('fields')]
+            export_fields = cls.validate_export_columns(field_name, kwargs.pop("fields", None))
             fields_mapping = json.loads(kwargs.pop('fields_columns'))
             file_format = kwargs.pop("file_format", "csv")
 
