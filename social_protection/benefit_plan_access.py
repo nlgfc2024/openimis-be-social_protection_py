@@ -76,13 +76,13 @@ def can_manage_benefit_plan_assignments(user, benefit_plan_id):
     """Policy foundation for Ticket 02 assignment mutations."""
     if _is_superuser(user):
         return True
-    return bool(
-        user
-        and user.has_perms(
-            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
-        )
-        and can_access_benefit_plan(user, benefit_plan_id)
-    )
+    if not user or not user.has_perms(
+        SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
+    ):
+        return False
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        return has_all_benefit_plans_access(user)
+    return can_access_benefit_plan(user, benefit_plan_id)
 
 
 def require_benefit_plan_assignment_management(user, benefit_plan_id):

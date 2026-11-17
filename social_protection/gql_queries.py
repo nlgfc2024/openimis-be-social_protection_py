@@ -21,7 +21,11 @@ from social_protection.models import (
     BenefitPlanDataUploadRecords,
     UserBenefitPlanAccess,
 )
-from core.gql_queries import UserGQLType
+from social_protection.benefit_plan_access import (
+    get_accessible_benefit_plan_ids,
+    has_all_benefit_plans_access,
+    require_benefit_plan_assignment_management,
+)
 
 
 def _have_permissions(user, permission):
@@ -129,9 +133,28 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         return None
 
 
+class BenefitPlanAssignmentUserGQLType(graphene.ObjectType):
+    id = graphene.ID(required=True)
+    username = graphene.String(required=True)
+    first_name = graphene.String()
+    last_name = graphene.String()
+
+    def resolve_id(self, info):
+        return graphene.relay.Node.to_global_id(
+            "BenefitPlanAssignmentUserGQLType",
+            self.id,
+        )
+
+    def resolve_first_name(self, info):
+        return self.i_user.other_names if self.i_user else None
+
+    def resolve_last_name(self, info):
+        return self.i_user.last_name if self.i_user else None
+
+
 class UserBenefitPlanAccessGQLType(DjangoObjectType):
     uuid = graphene.String(source="uuid")
-    user = graphene.Field(UserGQLType)
+    user = graphene.Field(BenefitPlanAssignmentUserGQLType, required=True)
 
     class Meta:
         model = UserBenefitPlanAccess
@@ -142,6 +165,38 @@ class UserBenefitPlanAccessGQLType(DjangoObjectType):
             "user__username": ["exact", "icontains"],
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        queryset = queryset.filter(is_deleted=False)
+        user = info.context.user
+        if getattr(user, "is_superuser", False):
+            return queryset
+        if not user or not user.has_perms(
+            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
+        ):
+            return queryset.none()
+        if has_all_benefit_plans_access(user):
+            return queryset
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset.none()
+        return queryset.filter(
+            benefit_plan_id__in=get_accessible_benefit_plan_ids(user),
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        assignment = UserBenefitPlanAccess.objects.filter(
+            id=id,
+            is_deleted=False,
+        ).select_related("benefit_plan").first()
+        if assignment is None:
+            return None
+        require_benefit_plan_assignment_management(
+            info.context.user,
+            assignment.benefit_plan_id,
+        )
+        return assignment
 
 
 
