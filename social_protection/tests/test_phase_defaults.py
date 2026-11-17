@@ -12,6 +12,7 @@ from social_protection.phase_defaults import (
     deep_merge,
     validate_benefit_plan_creation_defaults,
 )
+from social_protection.models import BenefitPlan, UserBenefitPlanAccess
 from social_protection.services import BenefitPlanService
 from social_protection.tests.data import service_add_payload_no_ext
 
@@ -177,8 +178,12 @@ class BenefitPlanCreationDefaultsTest(TestCase):
         with patch.object(
             BaseService,
             "create",
-            return_value={"success": True},
-        ) as base_create:
+            return_value={"success": True, "data": {"uuid": "new-plan"}},
+        ) as base_create, patch.object(
+            BenefitPlan.objects,
+            "get",
+            return_value=BenefitPlan(),
+        ), patch.object(UserBenefitPlanAccess, "save"):
             result = self.service.create(payload)
 
         self.assertTrue(result["success"], result.get("detail"))

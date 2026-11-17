@@ -37,6 +37,31 @@ class BenefitPlan(core_models.HistoryBusinessModel):
         return f'Benefit Plan {self.code}'
 
 
+class UserBenefitPlanAccess(core_models.HistoryBusinessModel):
+    user = models.ForeignKey(
+        core_models.User,
+        models.DO_NOTHING,
+        related_name="benefit_plan_accesses",
+    )
+    benefit_plan = models.ForeignKey(
+        BenefitPlan,
+        models.DO_NOTHING,
+        related_name="user_accesses",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "benefit_plan"],
+                condition=models.Q(is_deleted=False),
+                name="unique_active_user_benefit_plan",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user} -> {self.benefit_plan}"
+
+
 class BenefitPlanMutation(UUIDModel, ObjectMutation):
     benefit_plan = models.ForeignKey(BenefitPlan, models.DO_NOTHING, related_name='mutations')
     mutation = models.ForeignKey(MutationLog, models.DO_NOTHING, related_name='benefit_plan')
