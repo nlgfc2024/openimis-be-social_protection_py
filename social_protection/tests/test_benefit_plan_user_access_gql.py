@@ -13,6 +13,7 @@ from graphql_relay import to_global_id
 from core.models import MutationLog
 from core.test_helpers import (
     create_test_interactive_user,
+    create_test_language,
     create_test_technical_user,
 )
 from social_protection.apps import SocialProtectionConfig
@@ -398,6 +399,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
 class BenefitPlanUserAccessGraphQLTest(TestCase):
     @classmethod
     def setUpTestData(cls):
+        create_test_language(code="en")
         cls.manager = create_test_technical_user(username="assignment-manager")
         cls.target = create_test_technical_user(username="assignment-target")
         cls.named_target = create_test_interactive_user(
