@@ -19,6 +19,11 @@ from social_protection.models import (
     BenefitPlan,
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
+    UserBenefitPlanAccess,
+)
+from social_protection.benefit_plan_access import (
+    filter_benefit_plan_assignments_for_management,
+    require_benefit_plan_assignment_management,
 )
 
 
@@ -126,6 +131,58 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
             return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
         return None
 
+
+class BenefitPlanAssignmentUserGQLType(graphene.ObjectType):
+    id = graphene.ID(required=True)
+    username = graphene.String(required=True)
+    first_name = graphene.String()
+    last_name = graphene.String()
+
+    def resolve_id(self, info):
+        return str(self.id)
+
+    def resolve_first_name(self, info):
+        return self.i_user.other_names if self.i_user else None
+
+    def resolve_last_name(self, info):
+        return self.i_user.last_name if self.i_user else None
+
+
+class UserBenefitPlanAccessGQLType(DjangoObjectType):
+    uuid = graphene.String(source="uuid")
+    user = graphene.Field(BenefitPlanAssignmentUserGQLType, required=True)
+
+    class Meta:
+        model = UserBenefitPlanAccess
+        fields = ("id", "user", "date_created")
+        interfaces = (graphene.relay.Node,)
+        filter_fields = {
+            "id": ["exact"],
+            "user__username": ["exact", "icontains"],
+        }
+        connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        queryset = queryset.filter(is_deleted=False)
+        return filter_benefit_plan_assignments_for_management(
+            queryset,
+            info.context.user,
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        assignment = UserBenefitPlanAccess.objects.filter(
+            id=id,
+            is_deleted=False,
+        ).select_related("benefit_plan").first()
+        if assignment is None:
+            return None
+        require_benefit_plan_assignment_management(
+            info.context.user,
+            assignment.benefit_plan_id,
+        )
+        return assignment
 
 
 class BeneficiarySharedFilterMixin:
