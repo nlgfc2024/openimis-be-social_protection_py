@@ -73,42 +73,16 @@ def filter_queryset_by_benefit_plan(queryset, user, field_name="benefit_plan_id"
 
 
 def can_manage_benefit_plan_assignments(user, benefit_plan_id):
-    """Return whether ``user`` may manage assignments for one Benefit Plan.
-
-    When access control is disabled, Benefit Plan data is deliberately
-    unrestricted, but assignment administration remains a global privileged
-    operation.  Permission 160006 supplies that explicit global scope and
-    160007 supplies the assignment-management capability; both are therefore
-    required.  Superusers retain their existing bypass in every mode.
-    """
+    """Policy foundation for Ticket 02 assignment mutations."""
     if _is_superuser(user):
         return True
-    if not user or not user.has_perms(
-        SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
-    ):
-        return False
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
-        return has_all_benefit_plans_access(user)
-    return can_access_benefit_plan(user, benefit_plan_id)
-
-
-def filter_benefit_plan_assignments_for_management(queryset, user):
-    """Restrict assignments to Benefit Plans ``user`` may manage."""
-    if _is_superuser(user):
-        return queryset
-    if not user or not user.has_perms(
-        SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
-    ):
-        return queryset.none()
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
-        if has_all_benefit_plans_access(user):
-            return queryset
-        return queryset.none()
-
-    accessible_ids = get_accessible_benefit_plan_ids(user)
-    if accessible_ids is None:
-        return queryset
-    return queryset.filter(benefit_plan_id__in=accessible_ids)
+    return bool(
+        user
+        and user.has_perms(
+            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
+        )
+        and can_access_benefit_plan(user, benefit_plan_id)
+    )
 
 
 def require_benefit_plan_assignment_management(user, benefit_plan_id):
