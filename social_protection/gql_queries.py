@@ -22,8 +22,7 @@ from social_protection.models import (
     UserBenefitPlanAccess,
 )
 from social_protection.benefit_plan_access import (
-    get_accessible_benefit_plan_ids,
-    has_all_benefit_plans_access,
+    filter_benefit_plan_assignments_for_management,
     require_benefit_plan_assignment_management,
 )
 
@@ -140,10 +139,7 @@ class BenefitPlanAssignmentUserGQLType(graphene.ObjectType):
     last_name = graphene.String()
 
     def resolve_id(self, info):
-        return graphene.relay.Node.to_global_id(
-            "BenefitPlanAssignmentUserGQLType",
-            self.id,
-        )
+        return str(self.id)
 
     def resolve_first_name(self, info):
         return self.i_user.other_names if self.i_user else None
@@ -169,19 +165,9 @@ class UserBenefitPlanAccessGQLType(DjangoObjectType):
     @classmethod
     def get_queryset(cls, queryset, info):
         queryset = queryset.filter(is_deleted=False)
-        user = info.context.user
-        if getattr(user, "is_superuser", False):
-            return queryset
-        if not user or not user.has_perms(
-            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
-        ):
-            return queryset.none()
-        if has_all_benefit_plans_access(user):
-            return queryset
-        if not SocialProtectionConfig.enable_benefit_plan_access_control:
-            return queryset.none()
-        return queryset.filter(
-            benefit_plan_id__in=get_accessible_benefit_plan_ids(user),
+        return filter_benefit_plan_assignments_for_management(
+            queryset,
+            info.context.user,
         )
 
     @classmethod
@@ -197,7 +183,6 @@ class UserBenefitPlanAccessGQLType(DjangoObjectType):
             assignment.benefit_plan_id,
         )
         return assignment
-
 
 
 class BeneficiarySharedFilterMixin:

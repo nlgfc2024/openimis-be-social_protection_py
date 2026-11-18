@@ -3,7 +3,7 @@ import json
 import graphene as graphene
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils.translation import gettext as _
 
 from core.gql.gql_mutations.base_mutation import (
@@ -13,6 +13,7 @@ from core.gql.gql_mutations.base_mutation import (
 from core.schema import OpenIMISMutation
 from core.models import User
 from social_protection.benefit_plan_access import (
+    has_all_benefit_plans_access,
     require_benefit_plan_assignment_management,
 )
 from social_protection.apps import SocialProtectionConfig
@@ -157,14 +158,22 @@ class AssignBenefitPlanUserMutation(BaseMutation):
             raise PermissionDenied(_("mutation.authentication_required"))
 
         benefit_plan_id = data.get("benefit_plan_id")
-        require_benefit_plan_assignment_management(user, benefit_plan_id)
-
         if not BenefitPlan.objects.filter(
             id=benefit_plan_id,
             is_deleted=False,
         ).exists():
             raise ValidationError("mutation.benefit_plan_not_found")
-        if not User.objects.filter(id=data.get("user_id")).exists():
+        require_benefit_plan_assignment_management(user, benefit_plan_id)
+        target_user = User.objects.select_related(
+            "i_user", "t_user", "officer", "claim_admin",
+        ).filter(id=data.get("user_id")).first()
+        underlying_user = target_user._u if target_user else None
+        if (
+            target_user is None
+            or underlying_user is None
+            or not target_user.is_active
+            or getattr(underlying_user, "validity_to", None) is not None
+        ):
             raise ValidationError("mutation.user_not_found")
         if UserBenefitPlanAccess.objects.filter(
             user_id=data.get("user_id"),
@@ -179,7 +188,13 @@ class AssignBenefitPlanUserMutation(BaseMutation):
             user_id=data["user_id"],
             benefit_plan_id=data["benefit_plan_id"],
         )
-        assignment.save(user=user)
+        try:
+            with transaction.atomic():
+                assignment.save(user=user)
+        except IntegrityError as exc:
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_exists"
+            ) from exc
         return None
 
     class Input(AssignBenefitPlanUserInputType):
@@ -196,26 +211,32 @@ class RevokeBenefitPlanUserAccessMutation(BaseMutation):
         return UserBenefitPlanAccess.objects.filter(
             id=assignment_id,
             is_deleted=False,
-        ).select_related("benefit_plan").first()
+        ).first()
 
     @classmethod
     def _validate_mutation(cls, user, **data):
         if type(user) is AnonymousUser or not getattr(user, "id", None):
             raise PermissionDenied(_("mutation.authentication_required"))
 
-        assignment = cls._active_assignment(data.get("id"))
-        if assignment is None:
-            raise ValidationError("mutation.benefit_plan_user_assignment_not_found")
-        require_benefit_plan_assignment_management(
-            user,
-            assignment.benefit_plan_id,
-        )
-
     @classmethod
     def _mutate(cls, user, **data):
         assignment = cls._active_assignment(data["id"])
         if assignment is None:
-            raise ValidationError("mutation.benefit_plan_user_assignment_not_found")
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_not_found"
+            )
+        require_benefit_plan_assignment_management(
+            user,
+            assignment.benefit_plan_id,
+        )
+        if (
+            SocialProtectionConfig.enable_benefit_plan_access_control
+            and assignment.user_id == user.id
+            and not has_all_benefit_plans_access(user)
+        ):
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_self_revoke"
+            )
         assignment.delete(user=user)
         return None
 

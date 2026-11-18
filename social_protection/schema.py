@@ -5,7 +5,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.db.models import (
     Q, Case, When, BooleanField, Value, OuterRef, Subquery
 )
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from individual.models import GroupIndividual
 
 from django.utils.translation import gettext as _
@@ -189,15 +189,15 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             return ValidationMessageGQLType(True)
 
     def resolve_benefit_plan_user_access(self, info, benefit_plan_id, **kwargs):
-        require_benefit_plan_assignment_management(
-            info.context.user,
-            benefit_plan_id,
-        )
         if not BenefitPlan.objects.filter(
             id=benefit_plan_id,
             is_deleted=False,
         ).exists():
-            raise PermissionDenied(_("unauthorized"))
+            raise ValidationError("mutation.benefit_plan_not_found")
+        require_benefit_plan_assignment_management(
+            info.context.user,
+            benefit_plan_id,
+        )
         return UserBenefitPlanAccess.objects.filter(
             benefit_plan_id=benefit_plan_id,
             is_deleted=False,
