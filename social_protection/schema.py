@@ -118,8 +118,6 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         client_mutation_id=graphene.String(),
         customFilters=graphene.List(of_type=graphene.String),
         micro_catchment_uuid=graphene.String(),
-        # KYC exports are phase-scoped and select only the verified primary worker.
-        primary_recipient_only=graphene.Boolean(),
         # Used by the Phase beneficiary-list export. It is deliberately not a
         # queryset filter: it only controls the number of rows in the workbook.
         phase_beneficiary_summary_only=graphene.Boolean(),

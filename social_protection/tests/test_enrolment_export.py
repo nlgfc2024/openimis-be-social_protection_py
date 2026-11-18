@@ -17,7 +17,6 @@ from location.models import Location, MicroCatchment, MicroCatchmentGVH
 from social_protection.export_mixin import (
     ENROLMENT_EXPORT_COLUMNS,
     ExportableSocialProtectionQueryMixin,
-    KYC_EXPORT_COLUMNS,
 )
 from social_protection.models import Beneficiary, BenefitPlan, GroupBeneficiary
 from social_protection.schema import Query
@@ -34,30 +33,8 @@ class EnrolmentExportWorkbookTest(SimpleTestCase):
         self.assertIn("project_code", headers)
         self.assertIn("relationship", headers)
         self.assertIn("catchment_name", headers)
-        self.assertIn("account_number", headers)
-        self.assertIn("account_name", headers)
-        self.assertIn("bank", headers)
-
-    def test_kyc_workbook_has_only_kyc_columns(self):
-        workbook_content = ExportableSocialProtectionQueryMixin._enrolment_workbook(
-            [], KYC_EXPORT_COLUMNS,
-        )
-        worksheet = load_workbook(BytesIO(workbook_content))["Enrolments"]
-        headers = [cell.value for cell in next(worksheet.iter_rows(max_row=1))]
-
-        self.assertEqual(headers, list(KYC_EXPORT_COLUMNS))
-        self.assertIn("phase_name", headers)
-        self.assertNotIn("project_code", headers)
-        self.assertNotIn("enrolment_type", headers)
-
-    def test_kyc_account_number_cells_are_text_formatted(self):
-        workbook_content = ExportableSocialProtectionQueryMixin._enrolment_workbook(
-            [{"account_number": "00012345"}], KYC_EXPORT_COLUMNS,
-        )
-        worksheet = load_workbook(BytesIO(workbook_content))["Enrolments"]
-        account_number_column = list(KYC_EXPORT_COLUMNS).index("account_number") + 1
-
-        self.assertEqual(worksheet.cell(2, account_number_column).number_format, "@")
+        for payment_field in ("account_number", "account_name", "bank", "kyc_status"):
+            self.assertNotIn(payment_field, headers)
 
 
 @override_settings(ROW_SECURITY=False, MODE='dev')
@@ -141,7 +118,7 @@ class BeneficiaryExportFileTest(TestCase):
         self.assertEqual(list(rows[0]), list(ENROLMENT_EXPORT_COLUMNS))
         return [dict(zip(rows[0], row)) for row in rows[1:]]
 
-    def export_group_xlsx(self, record, export_argument, include_id=True):
+    def export_phase_summary_xlsx(self, record, include_id=True):
         request = RequestFactory().get('/graphql')
         request.user = self.user
         id_argument = (
@@ -153,7 +130,7 @@ class BeneficiaryExportFileTest(TestCase):
             'groupBeneficiaryExport(' + id_argument
             + 'benefitPlan_Id:' + json.dumps(str(record.benefit_plan_id))
             + ',fields:["id"],fieldsColumns:$columns,fileFormat:"xlsx",'
-            + export_argument + ':true)}',
+            + 'phaseBeneficiarySummaryOnly:true)}',
             context_value=request,
             variable_values={'columns': '{}'},
         )
@@ -216,99 +193,41 @@ class BeneficiaryExportFileTest(TestCase):
     def test_group_beneficiary_xlsx_contains_scoped_enrollment_counts(self):
         self.check_xlsx('group_beneficiary')
 
-    def test_group_kyc_export_uses_schema_argument_and_payment_aliases(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record, individual_json_ext={
-            'national_id': '',
-            'nid': 'NID-0',
-            'sex': 'F',
-            'paymentAccountNumber': '00001234',
-            'payment_account_name': 'Person0 Export',
-            'payment_provider': 'Export Bank',
-        })
-
-        rows = self.export_group_xlsx(record, 'primaryRecipientOnly')
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['full_name'], 'Person0 Export')
-        self.assertEqual(rows[0]['national_id'], 'NID-0')
-        self.assertEqual(rows[0]['Gender'], 'F')
-        self.assertEqual(rows[0]['account_number'], '00001234')
-        self.assertEqual(rows[0]['account_name'], 'Person0 Export')
-        self.assertEqual(rows[0]['bank'], 'Export Bank')
-        self.assertEqual(rows[0]['kyc_status'], 'VERIFIED')
-
-    def test_group_kyc_export_skips_unverified_primary_recipient(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record, individual_status='NOT_VERIFIED')
-
-        self.assertEqual(self.export_group_xlsx(record, 'primaryRecipientOnly'), [])
-
-    def test_group_kyc_export_skips_unverified_households(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record, group_status='NOT_VERIFIED')
-
-        self.assertEqual(self.export_group_xlsx(record, 'primaryRecipientOnly'), [])
-
-    def test_group_kyc_export_skips_ambiguous_primary_recipients(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record)
-        second_person = Individual(
-            first_name='Second',
-            last_name='Primary',
-            dob=date(2000, 1, 2),
-            json_ext={'primary_worker': True, 'validation_status': 'VERIFIED'},
-            location=self.location,
-        )
-        second_person.save(username=self.user.username)
-        GroupIndividual(
-            group=record.group,
-            individual=second_person,
-            role=GroupIndividual.Role.SPOUSE,
-            recipient_type=GroupIndividual.RecipientType.SECONDARY,
-            json_ext={'primary_worker': True},
-        ).save(username=self.user.username)
-
-        self.assertEqual(self.export_group_xlsx(record, 'primaryRecipientOnly'), [])
-
-    def test_group_kyc_export_emits_only_one_row_per_household(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record)
-        duplicate = GroupBeneficiary(
-            group=record.group,
-            benefit_plan=record.benefit_plan,
-            status='ACTIVE',
-        )
-        duplicate.save(username=self.user.username)
-
-        rows = self.export_group_xlsx(record, 'primaryRecipientOnly', include_id=False)
-
-        self.assertEqual(len(rows), 1)
-
-    def test_group_kyc_export_skips_inactive_phase_beneficiaries(self):
-        record = self.records['group_beneficiary'][0]
-        self.set_verified_primary(record)
-        record.status = 'SUSPENDED'
-        record.save(username=self.user.username)
-
-        self.assertEqual(self.export_group_xlsx(record, 'primaryRecipientOnly'), [])
-
-    def test_group_kyc_export_does_not_fall_back_to_archived_or_legacy_members(self):
-        record = self.records['group_beneficiary'][0]
-        member = self.set_verified_primary(record)
-        GroupIndividual.objects.filter(pk=member.pk).update(is_deleted=True)
-
-        self.assertEqual(self.export_group_xlsx(record, 'primaryRecipientOnly'), [])
-
     def test_phase_summary_keeps_one_row_without_falling_back_to_archived_primary(self):
         record = self.records['group_beneficiary'][0]
         member = self.set_verified_primary(record)
         GroupIndividual.objects.filter(pk=member.pk).update(is_deleted=True)
 
-        rows = self.export_group_xlsx(record, 'phaseBeneficiarySummaryOnly')
+        rows = self.export_phase_summary_xlsx(record)
 
         self.assertEqual(len(rows), 1)
         self.assertIsNone(rows[0]['full_name'])
+
+    def test_phase_summary_uses_authoritative_primary_worker(self):
+        record = self.records['group_beneficiary'][0]
+        authoritative_member = self.set_verified_primary(record)
+        authoritative_member.recipient_type = GroupIndividual.RecipientType.SECONDARY
+        authoritative_member.save(username=self.user.username)
+        other_person = Individual(
+            first_name='Other',
+            last_name='Recipient',
+            dob=date(2000, 1, 2),
+            json_ext={'validation_status': 'VERIFIED'},
+            location=self.location,
+        )
+        other_person.save(username=self.user.username)
+        GroupIndividual(
+            group=record.group,
+            individual=other_person,
+            role=GroupIndividual.Role.SPOUSE,
+            recipient_type=GroupIndividual.RecipientType.PRIMARY,
+        ).save(username=self.user.username)
+
+        rows = self.export_phase_summary_xlsx(record)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['full_name'], 'Person0 Export')
+        self.assertEqual(rows[0]['relationship'], GroupIndividual.Role.HEAD)
 
     def test_phase_summary_uses_the_earliest_enrollment_deterministically(self):
         from project_social_protection.models import GroupBeneficiaryProjectEnrollment, Project
@@ -340,7 +259,7 @@ class BeneficiaryExportFileTest(TestCase):
             date_created=early_date,
         )
 
-        rows = self.export_group_xlsx(record, 'phaseBeneficiarySummaryOnly')
+        rows = self.export_phase_summary_xlsx(record)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['project_code'], 'GRO-EARLY')
