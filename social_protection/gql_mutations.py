@@ -15,6 +15,7 @@ from core.schema import OpenIMISMutation
 from core.models import User
 from social_protection.benefit_plan_access import (
     has_all_benefit_plans_access,
+    require_benefit_plan_access,
     require_benefit_plan_assignment_management,
     require_benefit_plan_assignment_management_permission,
 )
@@ -110,6 +111,31 @@ def drop_retired_json_ext(data, current=None):
         key: value for key, value in json_ext.items()
         if key not in RETIRED_JSON_EXT_KEYS
     }
+
+
+def _require_record_plan_access(user, model, record_id):
+    record = model.objects.filter(id=record_id).only("benefit_plan_id").first()
+    if record is not None:
+        require_benefit_plan_access(user, record.benefit_plan_id)
+    return record
+
+
+def _require_records_plan_access(user, model, record_ids):
+    for benefit_plan_id in model.objects.filter(
+        id__in=record_ids or [],
+    ).values_list("benefit_plan_id", flat=True).distinct():
+        require_benefit_plan_access(user, benefit_plan_id)
+
+
+def _require_beneficiary_write_access(user, model, data):
+    current = None
+    if data.get("id"):
+        current = _require_record_plan_access(user, model, data["id"])
+    destination_plan_id = data.get("benefit_plan_id")
+    if destination_plan_id is None and current is not None:
+        destination_plan_id = current.benefit_plan_id
+    if destination_plan_id is not None:
+        require_benefit_plan_access(user, destination_plan_id)
 
 
 class CreateBenefitPlanInputType(OpenIMISMutation.Input):
@@ -356,6 +382,8 @@ class UpdateBenefitPlanMutation(
             data, 'beneficiary_data_schema', "mutation.lack_of_schema_perms"
         )
         current = BenefitPlan.objects.filter(id=data.get("id")).first()
+        if current is not None:
+            require_benefit_plan_access(user, current.id)
         check_criteria_perms(
             user, SocialProtectionConfig.gql_benefit_plan_criteria_update_perms,
             data, current,
@@ -400,6 +428,8 @@ class DeleteBenefitPlanMutation(
         if type(user) is AnonymousUser or not user.id or not user.has_perms(
                 SocialProtectionConfig.gql_benefit_plan_delete_perms):
             raise ValidationError("mutation.authentication_required")
+        for benefit_plan_id in data.get("ids") or []:
+            require_benefit_plan_access(user, benefit_plan_id)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -438,6 +468,12 @@ class UndoDeleteBenefitPlanMutation(
         if type(user) is AnonymousUser or not user.id or not user.has_perms(
                 SocialProtectionConfig.gql_benefit_plan_delete_perms):
             raise ValidationError("mutation.authentication_required")
+        for benefit_plan_id in data.get("ids") or []:
+            require_benefit_plan_access(
+                user,
+                benefit_plan_id,
+                include_deleted=True,
+            )
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -481,6 +517,7 @@ class CreateBeneficiaryMutation(
             user, SocialProtectionConfig.gql_schema_create_perms,
             data, 'json_ext'
         )
+        _require_beneficiary_write_access(user, Beneficiary, data)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -518,6 +555,7 @@ class UpdateBeneficiaryMutation(
             user, SocialProtectionConfig.gql_schema_update_perms,
             data, 'json_ext'
         )
+        _require_beneficiary_write_access(user, Beneficiary, data)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -552,6 +590,11 @@ class DeleteBeneficiaryMutation(
         if type(user) is AnonymousUser or not user.id or not user.has_perms(
                 SocialProtectionConfig.gql_beneficiary_delete_perms):
             raise ValidationError("mutation.authentication_required")
+        _require_records_plan_access(
+            user,
+            Beneficiary,
+            data.get("ids"),
+        )
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -594,6 +637,8 @@ class CloseBenefitPlanMutation(
         if type(user) is AnonymousUser or not user.has_perms(
                 SocialProtectionConfig.gql_benefit_plan_close_perms):
             raise ValidationError("mutation.authentication_required")
+        for benefit_plan_id in data.get("ids") or []:
+            require_benefit_plan_access(user, benefit_plan_id)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -629,6 +674,7 @@ class CreateGroupBeneficiaryMutation(
             user, SocialProtectionConfig.gql_schema_create_perms,
             data, 'json_ext'
         )
+        _require_beneficiary_write_access(user, GroupBeneficiary, data)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -666,6 +712,7 @@ class UpdateGroupBeneficiaryMutation(
             user, SocialProtectionConfig.gql_schema_update_perms,
             data, 'json_ext'
         )
+        _require_beneficiary_write_access(user, GroupBeneficiary, data)
 
     @classmethod
     def _mutate(cls, user, **data):
@@ -700,6 +747,11 @@ class DeleteGroupBeneficiaryMutation(
         if type(user) is AnonymousUser or not user.id or not user.has_perms(
                 SocialProtectionConfig.gql_beneficiary_delete_perms):
             raise ValidationError("mutation.authentication_required")
+        _require_records_plan_access(
+            user,
+            GroupBeneficiary,
+            data.get("ids"),
+        )
 
     @classmethod
     def _mutate(cls, user, **data):

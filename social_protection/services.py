@@ -19,6 +19,10 @@ from individual.models import (
     Individual,
 )
 from social_protection.apps import SocialProtectionConfig
+from social_protection.benefit_plan_access import (
+    require_benefit_plan_access,
+    require_benefit_plan_upload_access,
+)
 from social_protection.models import (
     BenefitPlan,
     Beneficiary,
@@ -333,6 +337,7 @@ class BeneficiaryImportService:
         workflow: WorkflowHandler,
         group_aggregation_column: str
     ):
+        require_benefit_plan_access(self.user, benefit_plan.id)
         upload = self._save_sources(import_file, benefit_plan)
         self._create_benefit_plan_data_upload_records(
             benefit_plan, workflow, upload, group_aggregation_column
@@ -374,6 +379,12 @@ class BeneficiaryImportService:
     def validate_import_beneficiaries(
         self, upload_id: uuid, individual_sources, benefit_plan: BenefitPlan
     ):
+        require_benefit_plan_access(self.user, benefit_plan.id)
+        require_benefit_plan_upload_access(
+            self.user,
+            upload_id,
+            benefit_plan.id,
+        )
         dataframe = self._load_dataframe(individual_sources)
         validated_dataframe, invalid_items = (
             self._validate_possible_beneficiaries(
@@ -391,6 +402,12 @@ class BeneficiaryImportService:
     def create_task_with_importing_valid_items(
         self, upload_id: uuid, benefit_plan: BenefitPlan
     ):
+        require_benefit_plan_access(self.user, benefit_plan.id)
+        require_benefit_plan_upload_access(
+            self.user,
+            upload_id,
+            benefit_plan.id,
+        )
         if SocialProtectionConfig.enable_maker_checker_for_beneficiary_upload:
             BeneficiaryTaskCreatorService(self.user) \
                 .create_task_with_importing_valid_items(
@@ -416,6 +433,12 @@ class BeneficiaryImportService:
     def create_task_with_update_valid_items(
         self, upload_id: uuid, benefit_plan: BenefitPlan
     ):
+        require_benefit_plan_access(self.user, benefit_plan.id)
+        require_benefit_plan_upload_access(
+            self.user,
+            upload_id,
+            benefit_plan.id,
+        )
         mc_enabled = (
             SocialProtectionConfig.enable_maker_checker_for_beneficiary_update
         )
@@ -446,6 +469,12 @@ class BeneficiaryImportService:
     def synchronize_data_for_reporting(
         self, upload_id: uuid, benefit_plan: BenefitPlan
     ):
+        require_benefit_plan_access(self.user, benefit_plan.id)
+        require_benefit_plan_upload_access(
+            self.user,
+            upload_id,
+            benefit_plan.id,
+        )
         self._synchronize_individual(upload_id)
         self._synchronize_beneficiary(benefit_plan, upload_id)
 

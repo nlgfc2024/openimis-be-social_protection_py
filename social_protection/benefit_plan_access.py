@@ -3,7 +3,10 @@
 from django.core.exceptions import PermissionDenied
 
 from social_protection.apps import SocialProtectionConfig
-from social_protection.models import UserBenefitPlanAccess
+from social_protection.models import (
+    BenefitPlanDataUploadRecords,
+    UserBenefitPlanAccess,
+)
 
 
 def _is_superuser(user):
@@ -63,7 +66,7 @@ def get_accessible_benefit_plan_ids(user):
     ).values_list("benefit_plan_id", flat=True)
 
 
-def can_access_benefit_plan(user, benefit_plan_id):
+def can_access_benefit_plan(user, benefit_plan_id, include_deleted=False):
     """Return access only while both assignment and Benefit Plan are active.
 
     Assignments are deliberately retained when a Benefit Plan is soft-deleted,
@@ -75,17 +78,58 @@ def can_access_benefit_plan(user, benefit_plan_id):
         return True
     if not user or getattr(user, "is_anonymous", False):
         return False
+    filters = {
+        "user": user,
+        "benefit_plan_id": benefit_plan_id,
+        "is_deleted": False,
+    }
+    if not include_deleted:
+        filters["benefit_plan__is_deleted"] = False
     return UserBenefitPlanAccess.objects.filter(
-        user=user,
-        benefit_plan_id=benefit_plan_id,
-        is_deleted=False,
-        benefit_plan__is_deleted=False,
+        **filters,
     ).exists()
 
 
-def require_benefit_plan_access(user, benefit_plan_id):
-    if not can_access_benefit_plan(user, benefit_plan_id):
+def require_benefit_plan_access(
+    user,
+    benefit_plan_id,
+    include_deleted=False,
+):
+    if not can_access_benefit_plan(
+        user,
+        benefit_plan_id,
+        include_deleted=include_deleted,
+    ):
         raise PermissionDenied("Benefit Plan access is required.")
+
+
+def require_benefit_plan_upload_access(
+    user,
+    upload_id,
+    benefit_plan_id=None,
+):
+    """Protect an upload and bind it to the requested Benefit Plan.
+
+    Upload ownership was not enforced before the feature flag existed, so the
+    disabled path deliberately remains a no-op for backwards compatibility.
+    When enabled, every plan associated with the upload must be accessible and
+    an explicitly supplied plan must own the upload.
+    """
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        return
+
+    plan_ids = list(
+        BenefitPlanDataUploadRecords.objects.filter(
+            data_upload_id=upload_id,
+            is_deleted=False,
+        ).values_list("benefit_plan_id", flat=True).distinct()
+    )
+    if not plan_ids or (
+        benefit_plan_id is not None and benefit_plan_id not in plan_ids
+    ):
+        raise PermissionDenied("Benefit Plan upload access is required.")
+    for plan_id in plan_ids:
+        require_benefit_plan_access(user, plan_id)
 
 
 def filter_queryset_by_benefit_plan(queryset, user, field_name="benefit_plan_id"):

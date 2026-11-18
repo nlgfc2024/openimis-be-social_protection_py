@@ -84,8 +84,14 @@ class Beneficiary(core_models.HistoryBusinessModel):
 
     @classmethod
     def get_queryset(cls, queryset, user):
+        from social_protection.benefit_plan_access import (
+            filter_queryset_by_benefit_plan,
+        )
+
         if queryset is None:
             queryset = cls.objects.all()
+
+        queryset = filter_queryset_by_benefit_plan(queryset, user)
 
         individuals = Individual.objects.filter(
             id__in=queryset.values('individual_id')
@@ -118,8 +124,14 @@ class GroupBeneficiary(core_models.HistoryBusinessModel):
 
     @classmethod
     def get_queryset(cls, queryset, user):
+        from social_protection.benefit_plan_access import (
+            filter_queryset_by_benefit_plan,
+        )
+
         if queryset is None:
             queryset = cls.objects.all()
+
+        queryset = filter_queryset_by_benefit_plan(queryset, user)
 
         groups = Group.objects.filter(
             id__in=queryset.values('group_id')
