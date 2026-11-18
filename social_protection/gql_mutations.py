@@ -4,6 +4,7 @@ import graphene as graphene
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from django.utils.translation import gettext as _
 
 from core.gql.gql_mutations.base_mutation import (
@@ -170,11 +171,17 @@ class AssignBenefitPlanUserMutation(BaseMutation):
             "i_user", "t_user", "officer", "claim_admin",
         ).filter(id=data.get("user_id")).first()
         underlying_user = target_user._u if target_user else None
+        interactive_user = target_user.i_user if target_user else None
+        interactive_user_expired = (
+            interactive_user is not None
+            and interactive_user.validity_to is not None
+            and interactive_user.validity_to < timezone.now()
+        )
         if (
             target_user is None
             or underlying_user is None
-            or getattr(target_user, "is_deleted", False)
             or not target_user.is_active
+            or interactive_user_expired
         ):
             raise ValidationError("mutation.user_not_found")
         if UserBenefitPlanAccess.objects.filter(
@@ -219,9 +226,11 @@ class RevokeBenefitPlanUserAccessMutation(BaseMutation):
     def _validate_mutation(cls, user, **data):
         if type(user) is AnonymousUser or not getattr(user, "id", None):
             raise PermissionDenied(_("mutation.authentication_required"))
+        require_benefit_plan_assignment_management_permission(user)
 
     @classmethod
     def _mutate(cls, user, **data):
+        require_benefit_plan_assignment_management_permission(user)
         assignment = cls._active_assignment(data["id"])
         if assignment is None:
             raise ValidationError(

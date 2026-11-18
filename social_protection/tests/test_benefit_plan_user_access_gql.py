@@ -11,7 +11,7 @@ from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.utils import timezone
 from graphql_relay import to_global_id
 
-from core.models import MutationLog
+from core.models import ClaimAdmin, MutationLog, Officer, User
 from core.test_helpers import (
     create_test_interactive_user,
     create_test_language,
@@ -186,6 +186,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         user_select_related.return_value.filter.return_value.first.return_value = (
             SimpleNamespace(
                 _u=SimpleNamespace(validity_to=None),
+                i_user=None,
                 is_active=True,
             )
         )
@@ -214,6 +215,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         user_select_related.return_value.filter.return_value.first.return_value = (
             SimpleNamespace(
                 _u=SimpleNamespace(validity_to=None),
+                i_user=None,
                 is_active=True,
             )
         )
@@ -274,21 +276,21 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         assignment_filter.return_value.exists.return_value = False
         rejected_users = (
             SimpleNamespace(
-                _u=SimpleNamespace(
+                _u=SimpleNamespace(validity_to=None),
+                i_user=SimpleNamespace(
                     validity_to=timezone.now() - timedelta(days=1),
                 ),
-                is_active=False,
-                is_deleted=False,
-            ),
-            SimpleNamespace(
-                _u=SimpleNamespace(validity_to=None),
-                is_active=False,
-                is_deleted=False,
-            ),
-            SimpleNamespace(
-                _u=SimpleNamespace(validity_to=None),
                 is_active=True,
-                is_deleted=True,
+            ),
+            SimpleNamespace(
+                _u=SimpleNamespace(validity_to=None),
+                i_user=SimpleNamespace(validity_to=None),
+                is_active=False,
+            ),
+            SimpleNamespace(
+                _u=SimpleNamespace(validity_to=None),
+                i_user=SimpleNamespace(validity_to=None),
+                is_active=False,
             ),
         )
         for target_user in rejected_users:
@@ -320,21 +322,22 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         benefit_plan_filter.return_value.exists.return_value = True
         assignment_filter.return_value.exists.return_value = False
         now = timezone.now()
-        for validity_to in (None, now, now + timedelta(days=365)):
-            target_user = SimpleNamespace(
-                _u=SimpleNamespace(validity_to=validity_to),
-                is_active=True,
-                is_deleted=False,
-            )
-            user_select_related.return_value.filter.return_value.first.return_value = (
-                target_user
-            )
-            with self.subTest(validity_to=validity_to):
-                AssignBenefitPlanUserMutation._validate_mutation(
-                    self.requester,
-                    user_id=self.target_id,
-                    benefit_plan_id=self.plan_id,
+        with patch("social_protection.gql_mutations.timezone.now", return_value=now):
+            for validity_to in (None, now, now + timedelta(days=365)):
+                target_user = SimpleNamespace(
+                    _u=SimpleNamespace(validity_to=validity_to),
+                    i_user=SimpleNamespace(validity_to=validity_to),
+                    is_active=True,
                 )
+                user_select_related.return_value.filter.return_value.first.return_value = (
+                    target_user
+                )
+                with self.subTest(validity_to=validity_to):
+                    AssignBenefitPlanUserMutation._validate_mutation(
+                        self.requester,
+                        user_id=self.target_id,
+                        benefit_plan_id=self.plan_id,
+                    )
 
     @patch("social_protection.gql_mutations.require_benefit_plan_assignment_management")
     @patch("social_protection.gql_mutations.RevokeBenefitPlanUserAccessMutation._active_assignment")
@@ -343,6 +346,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         active_assignment,
         _require_management,
     ):
+        self.grant("160007")
         assignment = active_assignment.return_value
         assignment.benefit_plan_id = self.plan_id
         assignment.user_id = self.target_id
@@ -361,6 +365,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         _require_management,
         _has_all_access,
     ):
+        self.grant("160007")
         SocialProtectionConfig.enable_benefit_plan_access_control = True
         active_assignment.return_value = SimpleNamespace(
             benefit_plan_id=self.plan_id,
@@ -384,6 +389,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         _require_management,
         _has_all_access,
     ):
+        self.grant("160007")
         SocialProtectionConfig.enable_benefit_plan_access_control = True
         assignment = Mock(
             benefit_plan_id=self.plan_id,
@@ -395,6 +401,58 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
             id=uuid4(),
         )
         assignment.delete.assert_called_once_with(user=self.requester)
+
+    @patch(
+        "social_protection.gql_mutations."
+        "RevokeBenefitPlanUserAccessMutation._active_assignment",
+    )
+    def test_revocation_without_manage_permission_does_not_probe_assignment(
+        self,
+        active_assignment,
+    ):
+        assignment_id = uuid4()
+        with self.assertRaisesMessage(
+            PermissionDenied,
+            "Benefit Plan assignment-management permission is required.",
+        ):
+            RevokeBenefitPlanUserAccessMutation._validate_mutation(
+                self.requester,
+                id=assignment_id,
+            )
+        with self.assertRaisesMessage(
+            PermissionDenied,
+            "Benefit Plan assignment-management permission is required.",
+        ):
+            RevokeBenefitPlanUserAccessMutation._mutate(
+                self.requester,
+                id=assignment_id,
+            )
+        active_assignment.assert_not_called()
+
+    @patch(
+        "social_protection.gql_mutations."
+        "RevokeBenefitPlanUserAccessMutation._active_assignment",
+        return_value=None,
+    )
+    def test_authorised_revocation_of_missing_assignment_returns_not_found(
+        self,
+        active_assignment,
+    ):
+        self.grant("160007")
+        assignment_id = uuid4()
+        RevokeBenefitPlanUserAccessMutation._validate_mutation(
+            self.requester,
+            id=assignment_id,
+        )
+        with self.assertRaisesMessage(
+            ValidationError,
+            "mutation.benefit_plan_user_assignment_not_found",
+        ):
+            RevokeBenefitPlanUserAccessMutation._mutate(
+                self.requester,
+                id=assignment_id,
+            )
+        active_assignment.assert_called_once_with(assignment_id)
 
     @patch("social_protection.schema.require_benefit_plan_assignment_management")
     @patch("social_protection.schema.UserBenefitPlanAccess.objects.filter")
@@ -654,6 +712,26 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             username="assignment-superuser",
             super_user=True,
         )
+        officer = Officer.objects.create(
+            code="ASSIGN-OFFICER",
+            last_name="Officer",
+            other_names="Assignment",
+            audit_user_id=-1,
+        )
+        cls.officer_target = User.objects.create(
+            username="assignment-officer",
+            officer=officer,
+        )
+        claim_admin = ClaimAdmin.objects.create(
+            code="ASSIGN-CLAIM-ADMIN",
+            last_name="Claim Admin",
+            other_names="Assignment",
+            audit_user_id=-1,
+        )
+        cls.claim_admin_target = User.objects.create(
+            username="assignment-claim-admin",
+            claim_admin=claim_admin,
+        )
         cls.upg = BenefitPlan(code="UPG000002", name="UPG assignment test")
         cls.upg.save(user=cls.manager)
         cls.rmep = BenefitPlan(code="RMEP00002", name="RMEP assignment test")
@@ -733,6 +811,81 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             ).status,
             MutationLog.SUCCESS,
         )
+
+    def test_active_interactive_user_without_expiry_is_eligible(self):
+        self.named_target.i_user.active = True
+        self.named_target.i_user.validity_to = None
+        self.named_target.i_user.save()
+        AssignBenefitPlanUserMutation._validate_mutation(
+            self.manager,
+            user_id=self.named_target.id,
+            benefit_plan_id=self.upg.id,
+        )
+
+    def test_active_interactive_user_with_future_expiry_is_eligible(self):
+        self.named_target.i_user.active = True
+        self.named_target.i_user.validity_to = timezone.now() + timedelta(days=1)
+        self.named_target.i_user.save()
+        AssignBenefitPlanUserMutation._validate_mutation(
+            self.manager,
+            user_id=self.named_target.id,
+            benefit_plan_id=self.upg.id,
+        )
+
+    def test_expired_interactive_user_is_rejected_even_when_active(self):
+        self.named_target.i_user.active = True
+        self.named_target.i_user.validity_to = timezone.now() - timedelta(days=1)
+        self.named_target.i_user.save()
+        with self.assertRaisesMessage(ValidationError, "mutation.user_not_found"):
+            AssignBenefitPlanUserMutation._validate_mutation(
+                self.manager,
+                user_id=self.named_target.id,
+                benefit_plan_id=self.upg.id,
+            )
+
+    def test_inactive_interactive_user_is_rejected(self):
+        self.named_target.i_user.active = False
+        self.named_target.i_user.validity_to = None
+        self.named_target.i_user.save()
+        with self.assertRaisesMessage(ValidationError, "mutation.user_not_found"):
+            AssignBenefitPlanUserMutation._validate_mutation(
+                self.manager,
+                user_id=self.named_target.id,
+                benefit_plan_id=self.upg.id,
+            )
+
+    def test_interactive_user_expiry_boundary_is_eligible(self):
+        boundary = timezone.now()
+        self.named_target.i_user.active = True
+        self.named_target.i_user.validity_to = boundary
+        self.named_target.i_user.save()
+        with patch("social_protection.gql_mutations.timezone.now", return_value=boundary):
+            AssignBenefitPlanUserMutation._validate_mutation(
+                self.manager,
+                user_id=self.named_target.id,
+                benefit_plan_id=self.upg.id,
+            )
+
+    def test_active_non_interactive_user_types_are_eligible(self):
+        for target_user in (
+            self.target,
+            self.officer_target,
+            self.claim_admin_target,
+        ):
+            with self.subTest(username=target_user.username):
+                AssignBenefitPlanUserMutation._validate_mutation(
+                    self.manager,
+                    user_id=target_user.id,
+                    benefit_plan_id=self.upg.id,
+                )
+
+    def test_missing_user_is_rejected(self):
+        with self.assertRaisesMessage(ValidationError, "mutation.user_not_found"):
+            AssignBenefitPlanUserMutation._validate_mutation(
+                self.manager,
+                user_id=uuid4(),
+                benefit_plan_id=self.upg.id,
+            )
 
     def test_actual_graphql_failed_mutation_is_recorded(self):
         result = self.execute(
@@ -859,6 +1012,31 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             is_deleted=False,
         ).exists())
         self.validate_and_assign(self.manager, self.target, self.upg)
+
+    def test_unauthorised_revocation_hides_assignment_existence(self):
+        existing_assignment = UserBenefitPlanAccess.objects.get(
+            user=self.manager,
+            benefit_plan=self.upg,
+            is_deleted=False,
+        )
+        self.target.has_perms = lambda perms: False
+        for assignment_id in (existing_assignment.id, uuid4()):
+            with self.subTest(assignment_id=assignment_id), self.assertRaisesMessage(
+                PermissionDenied,
+                "Benefit Plan assignment-management permission is required.",
+            ):
+                RevokeBenefitPlanUserAccessMutation._validate_mutation(
+                    self.target,
+                    id=assignment_id,
+                )
+            with self.subTest(assignment_id=assignment_id), self.assertRaisesMessage(
+                PermissionDenied,
+                "Benefit Plan assignment-management permission is required.",
+            ):
+                RevokeBenefitPlanUserAccessMutation._mutate(
+                    self.target,
+                    id=assignment_id,
+                )
 
     def test_duplicate_active_assignment_is_rejected(self):
         self.validate_and_assign(self.manager, self.target, self.upg)
