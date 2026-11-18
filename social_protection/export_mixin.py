@@ -4,6 +4,7 @@ import types
 from io import BytesIO
 from itertools import islice
 
+from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 
@@ -24,9 +25,24 @@ KYC_EXPORT_COLUMNS = (
     "district_name", "traditional_authority_name", "catchment_name",
     "group_village_head_name", "village_name", "phase_name", "form_number", "full_name",
     "national_id", "date_of_birth", "Gender", "account_number", "account_name",
-    "bank",
+    "bank", "kyc_status",
 )
 ENROLMENT_EXPORT_BATCH_SIZE = 500
+
+
+def _first_json_ext_value(json_ext, *keys):
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(json_ext, dict):
+        return ""
+    for key in keys:
+        value = json_ext.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
@@ -75,31 +91,38 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
         """Create the fixed enrolment workbook used by the social-protection UI."""
         from django.db.models import Count, Prefetch
         from household_validation.identity import get_household_form_number
-        from individual.models import Group, GroupIndividual, Individual
+        from individual.models import GroupIndividual, Individual
         from location.models import MicroCatchmentGVH, MicroCatchmentTA
         from project_social_protection.models import (
-            BeneficiaryProjectEnrollment, GroupBeneficiaryProjectEnrollment, Project,
+            BeneficiaryProjectEnrollment, GroupBeneficiaryProjectEnrollment,
         )
-        from social_protection.models import BenefitPlan, BeneficiaryStatus, GroupBeneficiary
+        from social_protection.models import BenefitPlan, BeneficiaryStatus
+
+        if primary_recipient_only and field_name != "group_beneficiary":
+            raise ValidationError("KYC export is only available for household beneficiaries.")
+        if (primary_recipient_only or phase_beneficiary_summary_only) and not benefit_plan_id:
+            raise ValidationError("Phase exports require a benefit plan.")
 
         phase_name = ""
         if benefit_plan_id:
             phase = BenefitPlan.objects.filter(
                 id=benefit_plan_id,
                 is_deleted=False,
-            ).values("code", "name").first()
+            ).values("code", "name", "type").first()
+            if (primary_recipient_only or phase_beneficiary_summary_only) and not phase:
+                raise ValidationError("The selected benefit plan does not exist.")
+            if (
+                (primary_recipient_only or phase_beneficiary_summary_only)
+                and phase["type"] != BenefitPlan.BenefitPlanType.GROUP_TYPE
+            ):
+                raise ValidationError("Phase exports require a household benefit plan.")
             if phase:
                 phase_name = " ".join(
                     value for value in (phase["code"], phase["name"]) if value
                 )
 
-        is_group_export = (
-            field_name == "group_beneficiary" or queryset.model is Group
-        )
+        is_group_export = field_name == "group_beneficiary"
         relation = "group" if is_group_export else "individual"
-        has_beneficiary_relation = any(
-            field.name == relation for field in queryset.model._meta.get_fields()
-        )
         enrollment_model = (
             GroupBeneficiaryProjectEnrollment if is_group_export
             else BeneficiaryProjectEnrollment
@@ -109,38 +132,33 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             "project_enrollments",
             queryset=enrollment_model.objects.filter(is_deleted=False).select_related(
                 "project__activity", "project__benefit_plan",
-            ),
+            ).order_by("date_created", "id"),
         )
-        prefetches = [enrolment_prefetch] if has_beneficiary_relation else []
-        if is_group_export:
+        prefetches = [] if primary_recipient_only else [enrolment_prefetch]
+        if is_group_export and not primary_recipient_only:
             prefetches.append(Prefetch(
-                f"{'group__' if has_beneficiary_relation else ''}groupindividuals",
+                "group__groupindividuals",
                 queryset=GroupIndividual.objects.select_related("individual").order_by(
                     "group_id", "individual_id", "-date_updated"
                 ),
                 to_attr="export_group_members",
             ))
-        export_queryset = queryset
         enrolled_by_project = {
             row["project_id"]: row["count"]
             for row in enrollment_model.objects.filter(
                 is_deleted=False,
-                **{f"{enrollment_beneficiary_field}_id__in": export_queryset.order_by().values("pk")},
+                **{f"{enrollment_beneficiary_field}_id__in": queryset.order_by().values("pk")},
             ).values("project_id").annotate(count=Count("id"))
-        } if has_beneficiary_relation else {}
-        location_relation = (
-            f"{relation}__location__parent__parent__parent"
-            if has_beneficiary_relation else "location__parent__parent__parent"
-        )
-        queryset = queryset.select_related(location_relation)
-        if prefetches:
-            queryset = queryset.prefetch_related(*prefetches)
+        } if not primary_recipient_only else {}
+        queryset = queryset.select_related(f"{relation}__location__parent__parent__parent")
+        queryset = queryset.prefetch_related(*prefetches)
+        emitted_household_ids = set()
 
         def build_rows(records):
             record_locations = {}
             record_location_ids = {"D": set(), "W": set()}
             for record in records:
-                identity = getattr(record, relation, record)
+                identity = getattr(record, relation)
                 location = identity.location
                 current = location
                 while current:
@@ -149,34 +167,40 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                     current = getattr(current, "parent", None)
                 record_locations[record.id] = location
 
-            active_phase_group_ids = set()
-            if primary_recipient_only and is_group_export:
-                group_ids = [
-                    getattr(record, relation, record).id
-                    for record in records
-                ]
-                # KYC is a phase-level export. A household is eligible when it is an
-                # ACTIVE household beneficiary of the selected phase; requiring a
-                # separate project enrolment incorrectly excludes valid households
-                # that have not been assigned to an individual project.
-                active_phase_group_ids = set(
-                    GroupBeneficiary.objects.filter(
-                        is_deleted=False,
-                        status=BeneficiaryStatus.ACTIVE,
-                        group_id__in=group_ids,
-                        **({"benefit_plan_id": benefit_plan_id} if benefit_plan_id else {}),
-                    ).values_list("group_id", flat=True)
-                )
+            kyc_members_by_group = {}
+            individual_status_field = "validation_status"
+            verified_individual_status = "VERIFIED"
+            if primary_recipient_only:
+                if not apps.is_installed("enrolment"):
+                    raise ValidationError("KYC export requires the Enrolment module.")
+                from enrolment.apps import EnrolmentConfig
+                from individual.primary_recipients import authoritative_primary_worker_memberships
+
+                individual_status_field = EnrolmentConfig.registry_individual_verification_field
+                verified_individual_status = EnrolmentConfig.registry_verified_individual_value
+                active_group_ids = {
+                    record.group_id for record in records
+                    if (
+                        not record.is_deleted
+                        and record.status == BeneficiaryStatus.ACTIVE
+                        and str(record.benefit_plan_id) == str(benefit_plan_id)
+                    )
+                }
+                memberships = authoritative_primary_worker_memberships().filter(
+                    group_id__in=active_group_ids,
+                ).select_related("individual").order_by("group_id", "id")
+                for membership in memberships:
+                    kyc_members_by_group.setdefault(membership.group_id, []).append(membership)
 
             members_by_group = {}
             archived_members_by_group = {}
-            if is_group_export:
+            if is_group_export and not primary_recipient_only:
                 for record in records:
-                    identity = getattr(record, relation, record)
+                    identity = getattr(record, relation)
                     for member in identity.export_group_members:
                         if not member.is_deleted:
                             members_by_group.setdefault(member.group_id, []).append(member)
-                        else:
+                        elif not (primary_recipient_only or phase_beneficiary_summary_only):
                             archived_members_by_group.setdefault(member.group_id, {}) \
                                 .setdefault(member.individual_id, member)
 
@@ -184,57 +208,65 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             # links while retaining member IDs in Group.json_ext. Keep those reports
             # useful by resolving the saved IDs back to Individual records.
             legacy_member_ids_by_group = {}
-            legacy_member_ids = set()
-            for record in records:
-                if not is_group_export:
-                    continue
-                identity = getattr(record, relation, record)
-                group_json = identity.json_ext or {}
-                member_ids = list((group_json.get("members") or {}).keys())
-                legacy_member_ids_by_group[identity.id] = member_ids
-                legacy_member_ids.update(member_ids)
-            legacy_individuals = {
-                str(individual_id): individual
-                for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
-            }
+            legacy_individuals = {}
+            if is_group_export and not (primary_recipient_only or phase_beneficiary_summary_only):
+                legacy_member_ids = set()
+                for record in records:
+                    identity = getattr(record, relation)
+                    group_json = identity.json_ext or {}
+                    member_ids = list((group_json.get("members") or {}).keys())
+                    legacy_member_ids_by_group[identity.id] = member_ids
+                    legacy_member_ids.update(member_ids)
+                legacy_individuals = {
+                    str(individual_id): individual
+                    for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
+                }
 
             micro_catchments_by_location = {}
-            micro_catchment_ids_by_location = {}
             for link in MicroCatchmentGVH.objects.filter(
                 location_id__in=record_location_ids["W"],
                 validity_to__isnull=True,
                 micro_catchment__validity_to__isnull=True,
             ).select_related("micro_catchment"):
                 micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
-                micro_catchment_ids_by_location.setdefault(link.location_id, set()).add(
-                    link.micro_catchment_id,
-                )
             for link in MicroCatchmentTA.objects.filter(
                 location_id__in=record_location_ids["D"],
                 validity_to__isnull=True,
                 micro_catchment__validity_to__isnull=True,
             ).select_related("micro_catchment"):
                 micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
-                micro_catchment_ids_by_location.setdefault(link.location_id, set()).add(
-                    link.micro_catchment_id,
-                )
-
-            projects_by_micro_catchment = {}
-            micro_catchment_ids = set().union(*micro_catchment_ids_by_location.values()) \
-                if micro_catchment_ids_by_location else set()
-            for project in Project.objects.filter(
-                micro_catchment_id__in=micro_catchment_ids,
-                is_deleted=False,
-            ).select_related("activity", "benefit_plan"):
-                projects_by_micro_catchment.setdefault(project.micro_catchment_id, []).append(project)
 
             for record in records:
-                identity = getattr(record, relation, record)
-                if primary_recipient_only and is_group_export:
-                    if identity.id not in active_phase_group_ids:
+                identity = getattr(record, relation)
+                if primary_recipient_only:
+                    if (
+                        record.is_deleted
+                        or record.status != BeneficiaryStatus.ACTIVE
+                        or str(record.benefit_plan_id) != str(benefit_plan_id)
+                    ):
                         continue
-                    if (identity.json_ext or {}).get("validation_status") != "VERIFIED":
+                    primary_memberships = kyc_members_by_group.get(identity.id, [])
+                    if (
+                        len(primary_memberships) != 1
+                        or _first_json_ext_value(
+                            primary_memberships[0].individual.json_ext,
+                            individual_status_field,
+                        ) != str(verified_individual_status)
+                    ):
+                        logger.warning(
+                            "Skipping group beneficiary %s from KYC export: "
+                            "no single verified primary recipient was found",
+                            record.id,
+                        )
                         continue
+                if phase_beneficiary_summary_only or primary_recipient_only:
+                    if identity.id in emitted_household_ids:
+                        logger.warning(
+                            "Skipping duplicate group beneficiary %s from Phase export",
+                            record.id,
+                        )
+                        continue
+                    emitted_household_ids.add(identity.id)
                 district, ta, gvh, village = cls._location_columns(record_locations[record.id])
                 location_ids = {}
                 current = record_locations[record.id]
@@ -245,32 +277,35 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                     micro_catchments_by_location.get(location_ids.get("W"), [])
                     + micro_catchments_by_location.get(location_ids.get("D"), [])
                 ))
-                project_candidates = {}
-                for micro_catchment_id in (
-                    micro_catchment_ids_by_location.get(location_ids.get("W"), set())
-                    | micro_catchment_ids_by_location.get(location_ids.get("D"), set())
-                ):
-                    project_candidates.update({
-                        project.id: project
-                        for project in projects_by_micro_catchment.get(micro_catchment_id, [])
-                    })
-                if is_group_export:
+                if primary_recipient_only:
+                    membership = kyc_members_by_group[identity.id][0]
+                    members = [(membership.individual, membership.role)]
+                elif phase_beneficiary_summary_only:
+                    primary_memberships = [
+                        member
+                        for member in members_by_group.get(identity.id, [])
+                        if member.recipient_type == GroupIndividual.RecipientType.PRIMARY
+                    ]
+                    if len(primary_memberships) == 1:
+                        member = primary_memberships[0]
+                        members = [(member.individual, member.role)]
+                    else:
+                        if len(primary_memberships) > 1:
+                            logger.warning(
+                                "Phase summary export found multiple active primary recipients "
+                                "for group %s; exporting the household row without a recipient",
+                                identity.id,
+                            )
+                        members = [(None, "")]
+                elif is_group_export:
                     members = [
                         (member.individual, member.role)
                         for member in members_by_group.get(identity.id, [])
-                        if (
-                            not (primary_recipient_only or phase_beneficiary_summary_only)
-                            or member.recipient_type == GroupIndividual.RecipientType.PRIMARY
-                        )
                     ]
                     if not members:
                         members = [
                             (member.individual, member.role)
                             for member in archived_members_by_group.get(identity.id, {}).values()
-                            if (
-                                not (primary_recipient_only or phase_beneficiary_summary_only)
-                                or member.recipient_type == GroupIndividual.RecipientType.PRIMARY
-                            )
                         ]
                     if not members:
                         head_id = str((identity.json_ext or {}).get("head_id") or "")
@@ -281,22 +316,13 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                             )
                             for member_id in legacy_member_ids_by_group.get(identity.id, [])
                         ]
-                        if primary_recipient_only or phase_beneficiary_summary_only:
-                            head_member = next(
-                                (member for member in legacy_members if member[1] == "HEAD"),
-                                None,
-                            )
-                            members = [head_member] if head_member else legacy_members[:1]
-                        else:
-                            members = legacy_members
+                        members = legacy_members
                 else:
                     members = [(identity, "")]
-                # Keep one row for an enrolled household without members, but otherwise
-                # export every attached member with the same household/project details.
                 members = members or [(None, "")]
                 enrolments = (
-                    list(record.project_enrollments.all())
-                    if has_beneficiary_relation else []
+                    [] if primary_recipient_only
+                    else list(record.project_enrollments.all())
                 )
                 if primary_recipient_only:
                     project_rows = [(None, None)]
@@ -311,7 +337,6 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                 else:
                     project_rows = (
                         [(enrolment, enrolment.project) for enrolment in enrolments]
-                        or [(None, project) for project in project_candidates.values()]
                         or [(None, None)]
                     )
 
@@ -347,17 +372,42 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                                 )
                             ),
                             "full_name": f"{person.first_name} {person.last_name}".strip() if person else "",
-                            "national_id": person_json.get(
-                                "national_id", record_json.get("national_id", group_json.get("national_id", ""))
+                            "national_id": (
+                                _first_json_ext_value(
+                                    person_json, "national_id", "nationalId", "nid",
+                                )
+                                if primary_recipient_only or phase_beneficiary_summary_only
+                                else _first_json_ext_value(
+                                    person_json, "national_id", "nationalId", "nid",
+                                ) or _first_json_ext_value(
+                                    record_json, "national_id", "nationalId", "nid",
+                                ) or _first_json_ext_value(
+                                    group_json, "national_id", "nationalId", "nid",
+                                )
                             ),
                             "date_of_birth": person.dob.isoformat() if person and person.dob else "",
-                            "Gender": person_json.get("gender", ""),
+                            "Gender": _first_json_ext_value(person_json, "gender", "sex"),
                             "relationship": relationship,
                             "enrolment_type": "Household" if is_group_export else "Individual",
-                            "account_number": person_json.get("account_number", ""),
-                            "account_name": person_json.get("account_name", ""),
-                            "bank": person_json.get("bank", ""),
-                            "kyc_status": person_json.get("validation_status", ""),
+                            "account_number": _first_json_ext_value(
+                                person_json,
+                                "account_number", "accountNumber", "payment_account_number",
+                                "paymentAccountNumber", "bank_account_number", "bankAccountNumber",
+                                "account_no", "accountNo",
+                            ),
+                            "account_name": _first_json_ext_value(
+                                person_json,
+                                "account_name", "accountName", "payment_account_name",
+                                "paymentAccountName", "bank_account_name", "bankAccountName",
+                                "account_holder_name", "accountHolderName",
+                            ),
+                            "bank": _first_json_ext_value(
+                                person_json, "bank", "bank_name", "bankName", "provider",
+                                "payment_provider", "paymentProvider",
+                            ),
+                            "kyc_status": _first_json_ext_value(
+                                person_json, individual_status_field,
+                            ),
                         }
 
         def rows():
@@ -396,6 +446,28 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             custom_filters = kwargs.pop("customFilters", None)
             requested_fields = kwargs.pop("fields", None)
             primary_recipient_only = kwargs.get("primary_recipient_only", False)
+            phase_beneficiary_summary_only = kwargs.get(
+                "phase_beneficiary_summary_only", False,
+            )
+            file_format = kwargs.pop("file_format", "csv")
+            benefit_plan_id = kwargs.get("benefit_plan__id")
+            phase_export = primary_recipient_only or phase_beneficiary_summary_only
+
+            if primary_recipient_only:
+                if field_name != "group_beneficiary":
+                    raise ValidationError("KYC export is only available for household beneficiaries.")
+                if file_format != "xlsx":
+                    raise ValidationError("KYC export only supports the XLSX format.")
+                if not benefit_plan_id:
+                    raise ValidationError("KYC export requires a benefit plan.")
+                if not apps.is_installed("enrolment"):
+                    raise ValidationError("KYC export requires the Enrolment module.")
+            if phase_beneficiary_summary_only and (
+                field_name != "group_beneficiary" or file_format != "xlsx"
+            ):
+                raise ValidationError("Phase summary export only supports household XLSX exports.")
+            if phase_beneficiary_summary_only and not benefit_plan_id:
+                raise ValidationError("Phase summary export requires a benefit plan.")
             if primary_recipient_only:
                 # KYC always writes the fixed KYC workbook below. Its display
                 # columns (for example catchment_name and full_name) are not
@@ -408,7 +480,6 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             else:
                 export_fields = cls.validate_export_columns(field_name, requested_fields)
             fields_mapping = json.loads(kwargs.pop('fields_columns'))
-            file_format = kwargs.pop("file_format", "csv")
 
             source_field = getattr(cls, field_name)
             filter_kwargs = {k: v for k, v in kwargs.items() if k in source_field.filtering_args}
@@ -422,15 +493,8 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                     field_name,
                     info.context.user,
                     primary_recipient_only=primary_recipient_only,
-                    phase_beneficiary_summary_only=kwargs.get(
-                        "phase_beneficiary_summary_only", False,
-                    ),
-                    # Graphene passes the Django filter argument in snake case;
-                    # retain the camel-case fallback for older schemas.
-                    benefit_plan_id=(
-                        kwargs.get("benefit_plan__id")
-                        or kwargs.get("benefitPlanId")
-                    ),
+                    phase_beneficiary_summary_only=phase_beneficiary_summary_only,
+                    benefit_plan_id=benefit_plan_id if phase_export else kwargs.get("benefit_plan__id"),
                 ).name
             export_file = ExportableQueryModel\
                 .create_csv_export(qs, export_fields, info.context.user, column_names=fields_mapping,

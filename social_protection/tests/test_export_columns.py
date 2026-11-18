@@ -61,5 +61,12 @@ class BeneficiaryExportColumnTest(SimpleTestCase):
                 xlsx.return_value.name = 'enrolments.xlsx'
                 result = export(None, info, fields=['id'], fields_columns=json.dumps({}), file_format='xlsx')
                 self.assertEqual(result, 'enrolments.xlsx')
-                xlsx.assert_called_once_with(resolver.return_value.filter.return_value, field_name, info.context.user)
+                xlsx.assert_called_once_with(
+                    resolver.return_value.filter.return_value,
+                    field_name,
+                    info.context.user,
+                    primary_recipient_only=False,
+                    phase_beneficiary_summary_only=False,
+                    benefit_plan_id=None,
+                )
                 csv.assert_not_called()
