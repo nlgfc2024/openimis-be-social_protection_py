@@ -713,7 +713,7 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             super_user=True,
         )
         officer = Officer.objects.create(
-            code="ASSIGN-OFFICER",
+            code="ASGOFF01",
             last_name="Officer",
             other_names="Assignment",
             audit_user_id=-1,
@@ -723,7 +723,7 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             officer=officer,
         )
         claim_admin = ClaimAdmin.objects.create(
-            code="ASSIGN-CLAIM-ADMIN",
+            code="ASGCA001",
             last_name="Claim Admin",
             other_names="Assignment",
             audit_user_id=-1,
