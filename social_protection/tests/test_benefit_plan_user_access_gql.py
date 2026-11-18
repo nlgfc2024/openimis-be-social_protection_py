@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from contextlib import nullcontext
+from datetime import timedelta
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from core.test_helpers import (
 )
 from social_protection.apps import SocialProtectionConfig
 from social_protection.benefit_plan_access import (
+    can_access_benefit_plan,
     can_manage_benefit_plan_assignments,
 )
 from social_protection.gql_mutations import (
@@ -117,30 +119,56 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
 
     @patch(
         "social_protection.gql_queries."
-        "require_benefit_plan_assignment_management",
-        side_effect=PermissionDenied,
+        "can_manage_benefit_plan_assignments",
+        return_value=False,
     )
     @patch("social_protection.gql_queries.UserBenefitPlanAccess.objects.filter")
-    def test_direct_node_lookup_enforces_management_policy(
+    def test_direct_node_lookup_hides_inaccessible_assignment(
         self,
         assignment_filter,
-        require_management,
+        can_manage,
     ):
         assignment = SimpleNamespace(benefit_plan_id=self.plan_id)
-        assignment_filter.return_value.select_related.return_value.first.return_value = (
-            assignment
-        )
+        assignment_filter.return_value.first.return_value = assignment
         info = SimpleNamespace(context=SimpleNamespace(user=self.requester))
+        self.grant("160007")
 
-        with self.assertRaises(PermissionDenied):
-            UserBenefitPlanAccessGQLType.get_node(
-                info,
-                str(uuid4()),
-            )
-        require_management.assert_called_once_with(
+        self.assertIsNone(UserBenefitPlanAccessGQLType.get_node(
+            info,
+            str(uuid4()),
+        ))
+        can_manage.assert_called_once_with(
             self.requester,
             self.plan_id,
         )
+
+    @patch("social_protection.gql_queries.UserBenefitPlanAccess.objects.filter")
+    def test_direct_node_lookup_requires_general_management_permission(
+        self,
+        assignment_filter,
+    ):
+        info = SimpleNamespace(context=SimpleNamespace(user=self.requester))
+        with self.assertRaises(PermissionDenied):
+            UserBenefitPlanAccessGQLType.get_node(info, str(uuid4()))
+        assignment_filter.assert_not_called()
+
+    @patch(
+        "social_protection.gql_queries."
+        "can_manage_benefit_plan_assignments",
+    )
+    @patch("social_protection.gql_queries.UserBenefitPlanAccess.objects.filter")
+    def test_direct_node_lookup_returns_none_for_missing_assignment(
+        self,
+        assignment_filter,
+        can_manage,
+    ):
+        self.grant("160007")
+        assignment_filter.return_value.first.return_value = None
+        info = SimpleNamespace(context=SimpleNamespace(user=self.requester))
+        self.assertIsNone(
+            UserBenefitPlanAccessGQLType.get_node(info, str(uuid4())),
+        )
+        can_manage.assert_not_called()
 
     @patch("social_protection.gql_mutations.require_benefit_plan_assignment_management")
     @patch("social_protection.gql_mutations.UserBenefitPlanAccess.objects.filter")
@@ -153,6 +181,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         assignment_filter,
         require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = True
         user_select_related.return_value.filter.return_value.first.return_value = (
             SimpleNamespace(
@@ -180,6 +209,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         assignment_filter,
         _require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = True
         user_select_related.return_value.filter.return_value.first.return_value = (
             SimpleNamespace(
@@ -232,26 +262,79 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
     @patch("social_protection.gql_mutations.UserBenefitPlanAccess.objects.filter")
     @patch("social_protection.gql_mutations.User.objects.select_related")
     @patch("social_protection.gql_mutations.BenefitPlan.objects.filter")
-    def test_inactive_or_soft_deleted_user_is_rejected(
+    def test_expired_inactive_or_soft_deleted_user_is_rejected(
         self,
         benefit_plan_filter,
         user_select_related,
-        _assignment_filter,
+        assignment_filter,
         _require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = True
-        user_select_related.return_value.filter.return_value.first.return_value = (
+        assignment_filter.return_value.exists.return_value = False
+        rejected_users = (
             SimpleNamespace(
-                _u=SimpleNamespace(validity_to=timezone.now()),
+                _u=SimpleNamespace(
+                    validity_to=timezone.now() - timedelta(days=1),
+                ),
                 is_active=False,
-            )
+                is_deleted=False,
+            ),
+            SimpleNamespace(
+                _u=SimpleNamespace(validity_to=None),
+                is_active=False,
+                is_deleted=False,
+            ),
+            SimpleNamespace(
+                _u=SimpleNamespace(validity_to=None),
+                is_active=True,
+                is_deleted=True,
+            ),
         )
-        with self.assertRaisesMessage(ValidationError, "mutation.user_not_found"):
-            AssignBenefitPlanUserMutation._validate_mutation(
-                self.requester,
-                user_id=self.target_id,
-                benefit_plan_id=self.plan_id,
+        for target_user in rejected_users:
+            user_select_related.return_value.filter.return_value.first.return_value = (
+                target_user
             )
+            with self.subTest(target_user=target_user), self.assertRaisesMessage(
+                ValidationError,
+                "mutation.user_not_found",
+            ):
+                AssignBenefitPlanUserMutation._validate_mutation(
+                    self.requester,
+                    user_id=self.target_id,
+                    benefit_plan_id=self.plan_id,
+                )
+
+    @patch("social_protection.gql_mutations.require_benefit_plan_assignment_management")
+    @patch("social_protection.gql_mutations.UserBenefitPlanAccess.objects.filter")
+    @patch("social_protection.gql_mutations.User.objects.select_related")
+    @patch("social_protection.gql_mutations.BenefitPlan.objects.filter")
+    def test_active_user_expiry_variants_are_accepted(
+        self,
+        benefit_plan_filter,
+        user_select_related,
+        assignment_filter,
+        _require_management,
+    ):
+        self.grant("160007")
+        benefit_plan_filter.return_value.exists.return_value = True
+        assignment_filter.return_value.exists.return_value = False
+        now = timezone.now()
+        for validity_to in (None, now, now + timedelta(days=365)):
+            target_user = SimpleNamespace(
+                _u=SimpleNamespace(validity_to=validity_to),
+                is_active=True,
+                is_deleted=False,
+            )
+            user_select_related.return_value.filter.return_value.first.return_value = (
+                target_user
+            )
+            with self.subTest(validity_to=validity_to):
+                AssignBenefitPlanUserMutation._validate_mutation(
+                    self.requester,
+                    user_id=self.target_id,
+                    benefit_plan_id=self.plan_id,
+                )
 
     @patch("social_protection.gql_mutations.require_benefit_plan_assignment_management")
     @patch("social_protection.gql_mutations.RevokeBenefitPlanUserAccessMutation._active_assignment")
@@ -322,6 +405,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         access_filter,
         require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = True
         queryset = Mock()
         access_filter.return_value.select_related.return_value.order_by.return_value = queryset
@@ -336,6 +420,13 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
             benefit_plan_id=self.plan_id,
             is_deleted=False,
         )
+        access_filter.return_value.select_related.assert_called_once_with(
+            "user",
+            "user__i_user",
+            "user__officer",
+            "user__claim_admin",
+            "user__t_user",
+        )
 
     @patch("social_protection.schema.require_benefit_plan_assignment_management")
     @patch("social_protection.schema.BenefitPlan.objects.filter")
@@ -344,6 +435,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         benefit_plan_filter,
         _require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = False
         with self.assertRaisesMessage(
             ValidationError,
@@ -361,6 +453,7 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
         benefit_plan_filter,
         require_management,
     ):
+        self.grant("160007")
         benefit_plan_filter.return_value.exists.return_value = False
         with self.assertRaisesMessage(
             ValidationError,
@@ -373,6 +466,45 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
             )
         require_management.assert_not_called()
 
+    @patch("social_protection.gql_mutations.BenefitPlan.objects.filter")
+    def test_assignment_without_manage_permission_does_not_probe_plan(
+        self,
+        benefit_plan_filter,
+    ):
+        for plan_exists in (False, True):
+            benefit_plan_filter.reset_mock()
+            benefit_plan_filter.return_value.exists.return_value = plan_exists
+            with self.assertRaisesMessage(
+                PermissionDenied,
+                "Benefit Plan assignment-management permission is required.",
+            ):
+                AssignBenefitPlanUserMutation._validate_mutation(
+                    self.requester,
+                    user_id=self.target_id,
+                    benefit_plan_id=self.plan_id,
+                )
+            benefit_plan_filter.assert_not_called()
+
+    @patch("social_protection.schema.BenefitPlan.objects.filter")
+    def test_assignment_list_without_manage_permission_does_not_probe_plan(
+        self,
+        benefit_plan_filter,
+    ):
+        for plan_exists in (False, True):
+            benefit_plan_filter.reset_mock()
+            benefit_plan_filter.return_value.exists.return_value = plan_exists
+            with self.assertRaisesMessage(
+                PermissionDenied,
+                "Benefit Plan assignment-management permission is required.",
+            ):
+                Query().resolve_benefit_plan_user_access(
+                    SimpleNamespace(
+                        context=SimpleNamespace(user=self.requester),
+                    ),
+                    benefit_plan_id=self.plan_id,
+                )
+            benefit_plan_filter.assert_not_called()
+
     def test_assignment_user_identifier_is_plain_uuid(self):
         target_id = uuid4()
         resolved = BenefitPlanAssignmentUserGQLType.resolve_id(
@@ -380,6 +512,113 @@ class BenefitPlanUserAccessGraphQLUnitTest(SimpleTestCase):
             None,
         )
         self.assertEqual(resolved, str(target_id))
+
+    def test_assignment_user_names_prefer_interactive_user(self):
+        user = SimpleNamespace(
+            username="interactive-login",
+            i_user=SimpleNamespace(
+                other_names="Interactive First",
+                last_name="Interactive Last",
+            ),
+            officer=SimpleNamespace(
+                other_names="Officer First",
+                last_name="Officer Last",
+            ),
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_first_name(user, None),
+            "Interactive First",
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_last_name(user, None),
+            "Interactive Last",
+        )
+
+    def test_assignment_user_names_fall_back_to_officer(self):
+        user = SimpleNamespace(
+            username="officer-login",
+            i_user=None,
+            officer=SimpleNamespace(
+                other_names="Officer First",
+                last_name="Officer Last",
+            ),
+            claim_admin=None,
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_first_name(user, None),
+            "Officer First",
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_last_name(user, None),
+            "Officer Last",
+        )
+
+    def test_assignment_user_names_fall_back_to_claim_admin(self):
+        user = SimpleNamespace(
+            username="claim-admin-login",
+            i_user=None,
+            officer=None,
+            claim_admin=SimpleNamespace(
+                other_names="Claim First",
+                last_name="Claim Last",
+            ),
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_first_name(user, None),
+            "Claim First",
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_last_name(user, None),
+            "Claim Last",
+        )
+
+    def test_assignment_user_partial_and_technical_name_fallbacks(self):
+        partial_user = SimpleNamespace(
+            username="partial-login",
+            i_user=SimpleNamespace(
+                other_names="",
+                last_name="Interactive Last",
+            ),
+            officer=SimpleNamespace(
+                other_names="Officer First",
+                last_name="Officer Last",
+            ),
+            claim_admin=None,
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_first_name(
+                partial_user,
+                None,
+            ),
+            "Officer First",
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_last_name(
+                partial_user,
+                None,
+            ),
+            "Interactive Last",
+        )
+
+        technical_user = SimpleNamespace(
+            username="technical-login",
+            i_user=None,
+            officer=None,
+            claim_admin=None,
+        )
+        self.assertEqual(
+            BenefitPlanAssignmentUserGQLType.resolve_first_name(
+                technical_user,
+                None,
+            ),
+            "technical-login",
+        )
+        self.assertIsNone(
+            BenefitPlanAssignmentUserGQLType.resolve_last_name(
+                technical_user,
+                None,
+            ),
+        )
 
     @patch("social_protection.gql_queries.filter_benefit_plan_assignments_for_management")
     def test_assignment_type_queryset_reuses_shared_management_filter(
@@ -692,7 +931,46 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
                 id=assignment.id,
             )
 
-    def test_direct_node_lookup_rejects_inaccessible_assignment(self):
+    def test_deleted_plan_assignments_are_retained_but_fail_closed(self):
+        plan = BenefitPlan.objects.get(id=self.upg.id)
+        assignment = UserBenefitPlanAccess.objects.get(
+            user=self.manager,
+            benefit_plan=plan,
+            is_deleted=False,
+        )
+
+        plan.delete(user=self.manager)
+
+        self.assertTrue(UserBenefitPlanAccess.objects.filter(
+            id=assignment.id,
+            is_deleted=False,
+        ).exists())
+        self.assertFalse(can_access_benefit_plan(self.manager, plan.id))
+        with self.assertRaisesMessage(
+            ValidationError,
+            "mutation.benefit_plan_not_found",
+        ):
+            Query().resolve_benefit_plan_user_access(
+                SimpleNamespace(context=SimpleNamespace(user=self.manager)),
+                benefit_plan_id=plan.id,
+            )
+        with self.assertRaises(PermissionDenied):
+            RevokeBenefitPlanUserAccessMutation._mutate(
+                self.manager,
+                id=assignment.id,
+            )
+
+        plan.is_deleted = False
+        plan.save(user=self.manager)
+
+        self.assertTrue(can_access_benefit_plan(self.manager, plan.id))
+        restored_assignments = Query().resolve_benefit_plan_user_access(
+            SimpleNamespace(context=SimpleNamespace(user=self.manager)),
+            benefit_plan_id=plan.id,
+        )
+        self.assertTrue(restored_assignments.filter(id=assignment.id).exists())
+
+    def test_direct_node_lookup_hides_inaccessible_assignment(self):
         assignment = self.assign(self.target, self.rmep, self.manager)
         node_id = to_global_id(
             "UserBenefitPlanAccessGQLType",
@@ -706,8 +984,29 @@ class BenefitPlanUserAccessGraphQLTest(TestCase):
             """,
             variables={"id": node_id},
         )
-        self.assertTrue(result.errors)
+        self.assertIsNone(result.errors)
         self.assertIsNone(result.data["node"])
+
+    def test_direct_node_lookup_allows_global_access_manager(self):
+        assignment = self.assign(self.target, self.rmep, self.manager)
+        self.manager.has_perms = lambda perms: perms in (
+            ["160006"],
+            ["160007"],
+        )
+        node_id = to_global_id(
+            "UserBenefitPlanAccessGQLType",
+            assignment.id,
+        )
+        result = self.execute(
+            """
+            query AssignmentNode($id: ID!) {
+              node(id: $id) { id }
+            }
+            """,
+            variables={"id": node_id},
+        )
+        self.assertIsNone(result.errors, result.errors)
+        self.assertIsNotNone(result.data["node"])
 
     def test_resolver_returns_only_requested_authorised_plan(self):
         upg_target = self.assign(self.target, self.upg, self.manager)

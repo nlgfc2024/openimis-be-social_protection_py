@@ -39,6 +39,7 @@ from social_protection.gql_queries import (
 )
 from social_protection.benefit_plan_access import (
     require_benefit_plan_assignment_management,
+    require_benefit_plan_assignment_management_permission,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -189,6 +190,9 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             return ValidationMessageGQLType(True)
 
     def resolve_benefit_plan_user_access(self, info, benefit_plan_id, **kwargs):
+        require_benefit_plan_assignment_management_permission(
+            info.context.user,
+        )
         if not BenefitPlan.objects.filter(
             id=benefit_plan_id,
             is_deleted=False,
@@ -201,7 +205,13 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         return UserBenefitPlanAccess.objects.filter(
             benefit_plan_id=benefit_plan_id,
             is_deleted=False,
-        ).select_related("user", "user__i_user").order_by("user__username")
+        ).select_related(
+            "user",
+            "user__i_user",
+            "user__officer",
+            "user__claim_admin",
+            "user__t_user",
+        ).order_by("user__username")
 
     def resolve_bf_name_validity(self, info, **kwargs):
         perms = SocialProtectionConfig.gql_benefit_plan_search_perms

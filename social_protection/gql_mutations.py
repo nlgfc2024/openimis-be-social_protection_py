@@ -15,6 +15,7 @@ from core.models import User
 from social_protection.benefit_plan_access import (
     has_all_benefit_plans_access,
     require_benefit_plan_assignment_management,
+    require_benefit_plan_assignment_management_permission,
 )
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
@@ -158,6 +159,7 @@ class AssignBenefitPlanUserMutation(BaseMutation):
             raise PermissionDenied(_("mutation.authentication_required"))
 
         benefit_plan_id = data.get("benefit_plan_id")
+        require_benefit_plan_assignment_management_permission(user)
         if not BenefitPlan.objects.filter(
             id=benefit_plan_id,
             is_deleted=False,
@@ -171,8 +173,8 @@ class AssignBenefitPlanUserMutation(BaseMutation):
         if (
             target_user is None
             or underlying_user is None
+            or getattr(target_user, "is_deleted", False)
             or not target_user.is_active
-            or getattr(underlying_user, "validity_to", None) is not None
         ):
             raise ValidationError("mutation.user_not_found")
         if UserBenefitPlanAccess.objects.filter(

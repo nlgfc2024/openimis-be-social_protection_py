@@ -22,8 +22,9 @@ from social_protection.models import (
     UserBenefitPlanAccess,
 )
 from social_protection.benefit_plan_access import (
+    can_manage_benefit_plan_assignments,
     filter_benefit_plan_assignments_for_management,
-    require_benefit_plan_assignment_management,
+    require_benefit_plan_assignment_management_permission,
 )
 
 
@@ -141,11 +142,27 @@ class BenefitPlanAssignmentUserGQLType(graphene.ObjectType):
     def resolve_id(self, info):
         return str(self.id)
 
+    def _resolve_name(self, field):
+        for relation in ("i_user", "officer", "claim_admin"):
+            related_user = getattr(self, relation, None)
+            value = getattr(related_user, field, None)
+            if value and value.strip():
+                return value
+        if field == "other_names":
+            return self.username
+        return None
+
     def resolve_first_name(self, info):
-        return self.i_user.other_names if self.i_user else None
+        return BenefitPlanAssignmentUserGQLType._resolve_name(
+            self,
+            "other_names",
+        )
 
     def resolve_last_name(self, info):
-        return self.i_user.last_name if self.i_user else None
+        return BenefitPlanAssignmentUserGQLType._resolve_name(
+            self,
+            "last_name",
+        )
 
 
 class UserBenefitPlanAccessGQLType(DjangoObjectType):
@@ -172,16 +189,19 @@ class UserBenefitPlanAccessGQLType(DjangoObjectType):
 
     @classmethod
     def get_node(cls, info, id):
+        user = info.context.user
+        require_benefit_plan_assignment_management_permission(user)
         assignment = UserBenefitPlanAccess.objects.filter(
             id=id,
             is_deleted=False,
-        ).select_related("benefit_plan").first()
+        ).first()
         if assignment is None:
             return None
-        require_benefit_plan_assignment_management(
-            info.context.user,
+        if not can_manage_benefit_plan_assignments(
+            user,
             assignment.benefit_plan_id,
-        )
+        ):
+            return None
         return assignment
 
 
