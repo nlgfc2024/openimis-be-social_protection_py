@@ -3,7 +3,8 @@ import json
 import graphene as graphene
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError, PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 from django.utils.translation import gettext as _
 
 from core.gql.gql_mutations.base_mutation import (
@@ -11,10 +12,16 @@ from core.gql.gql_mutations.base_mutation import (
     BaseHistoryModelUpdateMutationMixin, BaseHistoryModelDeleteMutationMixin
 )
 from core.schema import OpenIMISMutation
+from core.models import User
+from social_protection.benefit_plan_access import (
+    has_all_benefit_plans_access,
+    require_benefit_plan_assignment_management,
+    require_benefit_plan_assignment_management_permission,
+)
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlan, Beneficiary, GroupBeneficiary, BeneficiaryStatus,
-    BenefitPlanMutation,
+    BenefitPlanMutation, UserBenefitPlanAccess,
 )
 from social_protection.services import (
     BenefitPlanService,
@@ -131,6 +138,121 @@ class CreateBenefitPlanInputType(OpenIMISMutation.Input):
 
 class UpdateBenefitPlanInputType(CreateBenefitPlanInputType):
     id = graphene.UUID(required=True)
+
+
+class AssignBenefitPlanUserInputType(OpenIMISMutation.Input):
+    benefit_plan_id = graphene.UUID(required=True)
+    user_id = graphene.UUID(required=True)
+
+
+class RevokeBenefitPlanUserAccessInputType(OpenIMISMutation.Input):
+    id = graphene.UUID(required=True)
+
+
+class AssignBenefitPlanUserMutation(BaseMutation):
+    _mutation_class = "AssignBenefitPlanUserMutation"
+    _mutation_module = "social_protection"
+    _model = UserBenefitPlanAccess
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not getattr(user, "id", None):
+            raise PermissionDenied(_("mutation.authentication_required"))
+
+        benefit_plan_id = data.get("benefit_plan_id")
+        require_benefit_plan_assignment_management_permission(user)
+        if not BenefitPlan.objects.filter(
+            id=benefit_plan_id,
+            is_deleted=False,
+        ).exists():
+            raise ValidationError("mutation.benefit_plan_not_found")
+        require_benefit_plan_assignment_management(user, benefit_plan_id)
+        target_user = User.objects.select_related(
+            "i_user", "t_user", "officer", "claim_admin",
+        ).filter(id=data.get("user_id")).first()
+        underlying_user = target_user._u if target_user else None
+        interactive_user = target_user.i_user if target_user else None
+        interactive_user_expired = (
+            interactive_user is not None
+            and interactive_user.validity_to is not None
+            and interactive_user.validity_to < timezone.now()
+        )
+        if (
+            target_user is None
+            or underlying_user is None
+            or not target_user.is_active
+            or interactive_user_expired
+        ):
+            raise ValidationError("mutation.user_not_found")
+        if UserBenefitPlanAccess.objects.filter(
+            user_id=data.get("user_id"),
+            benefit_plan_id=benefit_plan_id,
+            is_deleted=False,
+        ).exists():
+            raise ValidationError("mutation.benefit_plan_user_assignment_exists")
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        assignment = UserBenefitPlanAccess(
+            user_id=data["user_id"],
+            benefit_plan_id=data["benefit_plan_id"],
+        )
+        try:
+            with transaction.atomic():
+                assignment.save(user=user)
+        except IntegrityError as exc:
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_exists"
+            ) from exc
+        return None
+
+    class Input(AssignBenefitPlanUserInputType):
+        pass
+
+
+class RevokeBenefitPlanUserAccessMutation(BaseMutation):
+    _mutation_class = "RevokeBenefitPlanUserAccessMutation"
+    _mutation_module = "social_protection"
+    _model = UserBenefitPlanAccess
+
+    @classmethod
+    def _active_assignment(cls, assignment_id):
+        return UserBenefitPlanAccess.objects.filter(
+            id=assignment_id,
+            is_deleted=False,
+        ).first()
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not getattr(user, "id", None):
+            raise PermissionDenied(_("mutation.authentication_required"))
+        require_benefit_plan_assignment_management_permission(user)
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        require_benefit_plan_assignment_management_permission(user)
+        assignment = cls._active_assignment(data["id"])
+        if assignment is None:
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_not_found"
+            )
+        require_benefit_plan_assignment_management(
+            user,
+            assignment.benefit_plan_id,
+        )
+        if (
+            SocialProtectionConfig.enable_benefit_plan_access_control
+            and assignment.user_id == user.id
+            and not has_all_benefit_plans_access(user)
+        ):
+            raise ValidationError(
+                "mutation.benefit_plan_user_assignment_self_revoke"
+            )
+        assignment.delete(user=user)
+        return None
+
+    class Input(RevokeBenefitPlanUserAccessInputType):
+        pass
 
 
 class CreateGenericBeneficiaryInputType(OpenIMISMutation.Input):

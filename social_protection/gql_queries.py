@@ -19,6 +19,12 @@ from social_protection.models import (
     BenefitPlan,
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
+    UserBenefitPlanAccess,
+)
+from social_protection.benefit_plan_access import (
+    can_manage_benefit_plan_assignments,
+    filter_benefit_plan_assignments_for_management,
+    require_benefit_plan_assignment_management_permission,
 )
 
 
@@ -126,6 +132,77 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
             return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
         return None
 
+
+class BenefitPlanAssignmentUserGQLType(graphene.ObjectType):
+    id = graphene.ID(required=True)
+    username = graphene.String(required=True)
+    first_name = graphene.String()
+    last_name = graphene.String()
+
+    def resolve_id(self, info):
+        return str(self.id)
+
+    def _resolve_name(self, field):
+        for relation in ("i_user", "officer", "claim_admin"):
+            related_user = getattr(self, relation, None)
+            value = getattr(related_user, field, None)
+            if value and value.strip():
+                return value
+        if field == "other_names":
+            return self.username
+        return None
+
+    def resolve_first_name(self, info):
+        return BenefitPlanAssignmentUserGQLType._resolve_name(
+            self,
+            "other_names",
+        )
+
+    def resolve_last_name(self, info):
+        return BenefitPlanAssignmentUserGQLType._resolve_name(
+            self,
+            "last_name",
+        )
+
+
+class UserBenefitPlanAccessGQLType(DjangoObjectType):
+    uuid = graphene.String(source="uuid")
+    user = graphene.Field(BenefitPlanAssignmentUserGQLType, required=True)
+
+    class Meta:
+        model = UserBenefitPlanAccess
+        fields = ("id", "user", "date_created")
+        interfaces = (graphene.relay.Node,)
+        filter_fields = {
+            "id": ["exact"],
+            "user__username": ["exact", "icontains"],
+        }
+        connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        queryset = queryset.filter(is_deleted=False)
+        return filter_benefit_plan_assignments_for_management(
+            queryset,
+            info.context.user,
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        user = info.context.user
+        require_benefit_plan_assignment_management_permission(user)
+        assignment = UserBenefitPlanAccess.objects.filter(
+            id=id,
+            is_deleted=False,
+        ).first()
+        if assignment is None:
+            return None
+        if not can_manage_benefit_plan_assignments(
+            user,
+            assignment.benefit_plan_id,
+        ):
+            return None
+        return assignment
 
 
 class BeneficiarySharedFilterMixin:

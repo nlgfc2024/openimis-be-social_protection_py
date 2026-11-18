@@ -22,6 +22,26 @@ def has_all_benefit_plans_access(user):
     )
 
 
+def has_benefit_plan_assignment_management_permission(user):
+    """Return whether ``user`` has the general assignment-management right."""
+    if _is_superuser(user):
+        return True
+    return bool(
+        user
+        and user.has_perms(
+            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
+        )
+    )
+
+
+def require_benefit_plan_assignment_management_permission(user):
+    """Enforce the general right before looking up a requested resource."""
+    if not has_benefit_plan_assignment_management_permission(user):
+        raise PermissionDenied(
+            "Benefit Plan assignment-management permission is required."
+        )
+
+
 def get_accessible_benefit_plan_ids(user):
     """Return assigned plan IDs, or ``None`` when plan access is unrestricted.
 
@@ -44,6 +64,11 @@ def get_accessible_benefit_plan_ids(user):
 
 
 def can_access_benefit_plan(user, benefit_plan_id):
+    """Return access only while both assignment and Benefit Plan are active.
+
+    Assignments are deliberately retained when a Benefit Plan is soft-deleted,
+    but cannot grant scope until an authorised restore reactivates that plan.
+    """
     if not SocialProtectionConfig.enable_benefit_plan_access_control:
         return True
     if has_all_benefit_plans_access(user):
@@ -73,16 +98,38 @@ def filter_queryset_by_benefit_plan(queryset, user, field_name="benefit_plan_id"
 
 
 def can_manage_benefit_plan_assignments(user, benefit_plan_id):
-    """Policy foundation for Ticket 02 assignment mutations."""
+    """Return whether ``user`` may manage assignments for one Benefit Plan.
+
+    When access control is disabled, Benefit Plan data is deliberately
+    unrestricted, but assignment administration remains a global privileged
+    operation.  Permission 160006 supplies that explicit global scope and
+    160007 supplies the assignment-management capability; both are therefore
+    required.  Superusers retain their existing bypass in every mode.
+    """
     if _is_superuser(user):
         return True
-    return bool(
-        user
-        and user.has_perms(
-            SocialProtectionConfig.gql_benefit_plan_assignment_manage_perms
-        )
-        and can_access_benefit_plan(user, benefit_plan_id)
-    )
+    if not has_benefit_plan_assignment_management_permission(user):
+        return False
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        return has_all_benefit_plans_access(user)
+    return can_access_benefit_plan(user, benefit_plan_id)
+
+
+def filter_benefit_plan_assignments_for_management(queryset, user):
+    """Restrict assignments to Benefit Plans ``user`` may manage."""
+    if not has_benefit_plan_assignment_management_permission(user):
+        return queryset.none()
+    if _is_superuser(user):
+        return queryset
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        if has_all_benefit_plans_access(user):
+            return queryset
+        return queryset.none()
+
+    accessible_ids = get_accessible_benefit_plan_ids(user)
+    if accessible_ids is None:
+        return queryset
+    return queryset.filter(benefit_plan_id__in=accessible_ids)
 
 
 def require_benefit_plan_assignment_management(user, benefit_plan_id):
