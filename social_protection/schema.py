@@ -32,7 +32,7 @@ from social_protection.gql_queries import (
     BenefitPlanGQLType,
     BeneficiaryGQLType, GroupBeneficiaryGQLType,
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
-    BenefitPlanHistoryGQLType,
+    BenefitPlanHistoryGQLType, annotate_group_beneficiary_primary_recipient,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -118,6 +118,15 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         client_mutation_id=graphene.String(),
         customFilters=graphene.List(of_type=graphene.String),
         micro_catchment_uuid=graphene.String(),
+        group_primary_recipient_first_name_icontains=graphene.String(
+            name="group_PrimaryRecipient_FirstName_Icontains",
+        ),
+        group_primary_recipient_last_name_icontains=graphene.String(
+            name="group_PrimaryRecipient_LastName_Icontains",
+        ),
+        group_primary_recipient_dob_gte=graphene.Date(
+            name="group_PrimaryRecipient_Dob_Gte",
+        ),
     )
 
     beneficiary_data_upload_history = OrderedDjangoFilterConnectionField(
@@ -479,6 +488,21 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
 
         query = GroupBeneficiary.get_queryset(None, info.context.user)
         query = _apply_custom_filters(query.filter(*filters), **kwargs)
+        query = annotate_group_beneficiary_primary_recipient(query)
+        for argument, lookup in (
+            (
+                "group_primary_recipient_first_name_icontains",
+                "primary_recipient_first_name__icontains",
+            ),
+            (
+                "group_primary_recipient_last_name_icontains",
+                "primary_recipient_last_name__icontains",
+            ),
+            ("group_primary_recipient_dob_gte", "primary_recipient_dob__gte"),
+        ):
+            value = kwargs.get(argument)
+            if value not in (None, ""):
+                query = query.filter(**{lookup: value})
 
         eligible_group_uuids, check_performed = _get_eligible_group_uuids(
             query, info, **kwargs

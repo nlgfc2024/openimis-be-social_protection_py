@@ -2,6 +2,7 @@ from unittest import mock
 from core.models import User
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user
+from individual.models import GroupIndividual
 from social_protection import schema as sp_schema
 from graphene import Schema
 from social_protection.tests.test_helpers import (
@@ -22,6 +23,27 @@ class GroupBeneficiaryGQLTest(PatchedOpenIMISGraphQLTestCase):
 
     class AnonymousUserContext:
         user = mock.Mock(is_anonymous=True)
+
+    def add_verified_primary_worker(self, group):
+        individual = create_individual(self.user.username, payload_override={
+            'first_name': 'Zara',
+            'last_name': 'PrimaryWorker',
+            'dob': '1970-01-01',
+        })
+        membership = add_individual_to_group(
+            self.user.username,
+            individual,
+            group,
+            is_head=False,
+        )
+        membership.json_ext = {'primary_worker': True}
+        membership.save(username=self.user.username)
+        group.json_ext = {
+            **(group.json_ext or {}),
+            'validation_status': 'VERIFIED',
+        }
+        group.save(username=self.user.username)
+        return individual
 
     @classmethod
     def setUpClass(cls):
@@ -659,3 +681,92 @@ class GroupBeneficiaryGQLTest(PatchedOpenIMISGraphQLTestCase):
 
         dobs = [e['node']['group']['head']['dob'] for e in data['edges']]
         self.assertEqual(dobs, ['2000-01-01', '1990-01-01', '1980-01-01'])
+
+    def test_group_beneficiary_primary_recipient_sort_filter_and_search(self):
+        self.add_verified_primary_worker(self.group_2child)
+
+        order_query = f"""
+            query {{
+              groupBeneficiary(
+                benefitPlan_Id: "{self.benefit_plan.uuid}",
+                orderBy: ["primary_recipient_first_name"],
+                isDeleted: false,
+                first: 10
+              ) {{
+                edges {{
+                  node {{
+                    group {{ code }}
+                  }}
+                }}
+              }}
+            }}
+        """
+        response = self.query(
+            order_query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.user_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        ordered_codes = [
+            edge['node']['group']['code']
+            for edge in json.loads(response.content)['data']['groupBeneficiary']['edges']
+        ]
+        self.assertEqual(
+            ordered_codes,
+            [self.group_1child.code, self.group_0child.code, self.group_2child.code],
+        )
+
+        filter_query = f"""
+            query {{
+              groupBeneficiary(
+                benefitPlan_Id: "{self.benefit_plan.uuid}",
+                group_PrimaryRecipient_FirstName_Icontains: "Zara",
+                group_PrimaryRecipient_LastName_Icontains: "PrimaryWorker",
+                group_PrimaryRecipient_Dob_Gte: "1970-01-01",
+                isDeleted: false,
+                first: 10
+              ) {{
+                edges {{
+                  node {{
+                    group {{ code }}
+                  }}
+                }}
+              }}
+            }}
+        """
+        response = self.query(
+            filter_query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.user_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        filtered_codes = [
+            edge['node']['group']['code']
+            for edge in json.loads(response.content)['data']['groupBeneficiary']['edges']
+        ]
+        self.assertEqual(filtered_codes, [self.group_2child.code])
+
+        search_query = f"""
+            query {{
+              groupBeneficiary(
+                benefitPlan_Id: "{self.benefit_plan.uuid}",
+                search: "Zara",
+                isDeleted: false,
+                first: 10
+              ) {{
+                edges {{
+                  node {{
+                    group {{ code }}
+                  }}
+                }}
+              }}
+            }}
+        """
+        response = self.query(
+            search_query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.user_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        searched_codes = [
+            edge['node']['group']['code']
+            for edge in json.loads(response.content)['data']['groupBeneficiary']['edges']
+        ]
+        self.assertIn(self.group_2child.code, searched_codes)
