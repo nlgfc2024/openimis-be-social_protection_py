@@ -1,5 +1,5 @@
 import csv
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 import io
 import json
@@ -7,12 +7,13 @@ from tempfile import TemporaryDirectory
 
 import graphene
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from openpyxl import load_workbook
 
 from core.models import ExportableQueryModel
 from core.test_helpers import create_test_interactive_user
 from individual.models import Group, GroupIndividual, Individual
-from location.models import Location
+from location.models import Location, MicroCatchment, MicroCatchmentGVH
 from social_protection.export_mixin import (
     ENROLMENT_EXPORT_COLUMNS,
     ExportableSocialProtectionQueryMixin,
@@ -31,6 +32,9 @@ class EnrolmentExportWorkbookTest(SimpleTestCase):
         self.assertIn("date_of_birth", headers)
         self.assertIn("project_code", headers)
         self.assertIn("relationship", headers)
+        self.assertIn("catchment_name", headers)
+        for payment_field in ("account_number", "account_name", "bank", "kyc_status"):
+            self.assertNotIn(payment_field, headers)
 
 
 @override_settings(ROW_SECURITY=False, MODE='dev')
@@ -46,15 +50,18 @@ class BeneficiaryExportFileTest(TestCase):
         for location_type in ['R', 'D', 'W', 'V']:
             location = Location.objects.create(type=location_type, code=f'EXP-{location_type}',
                                                name=f'Export {location_type}', parent=location, audit_user_id=-1)
+        cls.location = location
         activity = Activity(name='Export activity')
         activity.save(username=cls.user.username)
         cls.records = {}
+        cls.projects = {}
         for field_name, plan_type in [('beneficiary', 'INDIVIDUAL'), ('group_beneficiary', 'GROUP')]:
             plan = BenefitPlan(code=plan_type[:3], name=f'{plan_type} export plan', type=plan_type)
             plan.save(username=cls.user.username)
             project = Project(code=plan_type[:3], name=f'{plan_type} export project', benefit_plan=plan,
                               activity=activity, location=location, target_beneficiaries=10, working_days=5)
             project.save(username=cls.user.username)
+            cls.projects[field_name] = project
             records = []
             # Only one beneficiary is selected for export. Its workbook count must
             # not include the other enrollment in the same project.
@@ -111,6 +118,50 @@ class BeneficiaryExportFileTest(TestCase):
         self.assertEqual(list(rows[0]), list(ENROLMENT_EXPORT_COLUMNS))
         return [dict(zip(rows[0], row)) for row in rows[1:]]
 
+    def export_phase_summary_xlsx(self, record, include_id=True):
+        request = RequestFactory().get('/graphql')
+        request.user = self.user
+        id_argument = (
+            'id:' + json.dumps(str(record.pk)) + ','
+            if include_id else ''
+        )
+        result = graphene.Schema(query=Query).execute(
+            'query($columns:GenericScalar) {'
+            'groupBeneficiaryExport(' + id_argument
+            + 'benefitPlan_Id:' + json.dumps(str(record.benefit_plan_id))
+            + ',fields:["id"],fieldsColumns:$columns,fileFormat:"xlsx",'
+            + 'phaseBeneficiarySummaryOnly:true)}',
+            context_value=request,
+            variable_values={'columns': '{}'},
+        )
+        self.assertIsNone(result.errors, result.errors)
+        export = ExportableQueryModel.objects.get(name=result.data['groupBeneficiaryExport'])
+        with export.content.open('rb') as content:
+            workbook = load_workbook(BytesIO(content.read()), read_only=True)
+        rows = list(workbook['Enrolments'].values)
+        workbook.close()
+        return [dict(zip(rows[0], row)) for row in rows[1:]]
+
+    def set_verified_primary(self, record, individual_status='VERIFIED', group_status='VERIFIED',
+                             individual_json_ext=None):
+        member = GroupIndividual.objects.get(group_id=record.group_id, is_deleted=False)
+        individual = member.individual
+        individual.json_ext = {
+            **(individual.json_ext or {}),
+            'primary_worker': True,
+            'validation_status': individual_status,
+            **(individual_json_ext or {}),
+        }
+        individual.save(username=self.user.username)
+        member.recipient_type = GroupIndividual.RecipientType.PRIMARY
+        member.json_ext = {**(member.json_ext or {}), 'primary_worker': True}
+        member.save(username=self.user.username)
+        group = record.group
+        group.refresh_from_db()
+        group.json_ext = {**(group.json_ext or {}), 'validation_status': group_status}
+        group.save(username=self.user.username)
+        return member
+
     def check_csv(self, field_name):
         relation = 'group' if field_name == 'group_beneficiary' else 'individual'
         rows = self.export(field_name, [
@@ -141,3 +192,102 @@ class BeneficiaryExportFileTest(TestCase):
 
     def test_group_beneficiary_xlsx_contains_scoped_enrollment_counts(self):
         self.check_xlsx('group_beneficiary')
+
+    def test_phase_summary_keeps_one_row_without_falling_back_to_archived_primary(self):
+        record = self.records['group_beneficiary'][0]
+        member = self.set_verified_primary(record)
+        GroupIndividual.objects.filter(pk=member.pk).update(is_deleted=True)
+
+        rows = self.export_phase_summary_xlsx(record)
+
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]['full_name'])
+
+    def test_phase_summary_uses_authoritative_primary_worker(self):
+        record = self.records['group_beneficiary'][0]
+        authoritative_member = self.set_verified_primary(record)
+        authoritative_member.recipient_type = GroupIndividual.RecipientType.SECONDARY
+        authoritative_member.save(username=self.user.username)
+        other_person = Individual(
+            first_name='Other',
+            last_name='Recipient',
+            dob=date(2000, 1, 2),
+            json_ext={'validation_status': 'VERIFIED'},
+            location=self.location,
+        )
+        other_person.save(username=self.user.username)
+        GroupIndividual(
+            group=record.group,
+            individual=other_person,
+            role=GroupIndividual.Role.SPOUSE,
+            recipient_type=GroupIndividual.RecipientType.PRIMARY,
+        ).save(username=self.user.username)
+
+        rows = self.export_phase_summary_xlsx(record)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['full_name'], 'Person0 Export')
+        self.assertEqual(rows[0]['relationship'], GroupIndividual.Role.HEAD)
+
+    def test_phase_summary_uses_the_earliest_enrollment_deterministically(self):
+        from project_social_protection.models import GroupBeneficiaryProjectEnrollment, Project
+
+        record = self.records['group_beneficiary'][0]
+        self.set_verified_primary(record)
+        early_project = Project(
+            code='GRO-EARLY',
+            name='Early project',
+            benefit_plan=record.benefit_plan,
+            activity=self.projects['group_beneficiary'].activity,
+            location=self.location,
+            target_beneficiaries=10,
+            working_days=5,
+        )
+        early_project.save(username=self.user.username)
+        early_enrollment = GroupBeneficiaryProjectEnrollment(
+            group_beneficiary=record,
+            project=early_project,
+        )
+        early_enrollment.save(username=self.user.username)
+        early_date = timezone.now() - timedelta(days=1)
+        late_date = timezone.now() + timedelta(days=1)
+        GroupBeneficiaryProjectEnrollment.objects.filter(
+            group_beneficiary=record,
+            project=self.projects['group_beneficiary'],
+        ).update(date_created=late_date)
+        GroupBeneficiaryProjectEnrollment.objects.filter(pk=early_enrollment.pk).update(
+            date_created=early_date,
+        )
+
+        rows = self.export_phase_summary_xlsx(record)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['project_code'], 'GRO-EARLY')
+        self.assertEqual(rows[0]['enrolment_date'], early_date.date().isoformat())
+
+    def test_standard_export_does_not_fan_out_to_unenrolled_catchment_projects(self):
+        from project_social_protection.models import GroupBeneficiaryProjectEnrollment
+
+        record = self.records['group_beneficiary'][0]
+        GroupBeneficiaryProjectEnrollment.objects.filter(
+            group_beneficiary=record,
+        ).update(is_deleted=True)
+        micro_catchment = MicroCatchment.objects.create(
+            code='EXPORT-MC',
+            name='Export catchment',
+            district=self.location.parent.parent.parent,
+            audit_user_id=-1,
+        )
+        MicroCatchmentGVH.objects.create(
+            micro_catchment=micro_catchment,
+            location=self.location.parent,
+            audit_user_id=-1,
+        )
+        for project in self.projects.values():
+            project.micro_catchment = micro_catchment
+            project.save(username=self.user.username)
+
+        rows = self.export('group_beneficiary', ['id'], 'xlsx')
+
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]['project_code'])

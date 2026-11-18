@@ -4,6 +4,7 @@ import types
 from io import BytesIO
 from itertools import islice
 
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 
 from core.custom_filters import CustomFilterWizardStorage
@@ -19,6 +20,21 @@ ENROLMENT_EXPORT_COLUMNS = (
     "full_name", "national_id", "date_of_birth", "relationship", "enrolment_type",
 )
 ENROLMENT_EXPORT_BATCH_SIZE = 500
+
+
+def _first_json_ext_value(json_ext, *keys):
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(json_ext, dict):
+        return ""
+    for key in keys:
+        value = json_ext.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
@@ -37,20 +53,28 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
         )
 
     @staticmethod
-    def _enrolment_workbook(rows):
+    def _enrolment_workbook(rows, columns=ENROLMENT_EXPORT_COLUMNS):
         from openpyxl import Workbook
+        from openpyxl.cell import WriteOnlyCell
 
         content = BytesIO()
         workbook = Workbook(write_only=True)
         worksheet = workbook.create_sheet("Enrolments")
-        worksheet.append(ENROLMENT_EXPORT_COLUMNS)
+        worksheet.append(columns)
         for row in rows:
-            worksheet.append([row.get(column, "") for column in ENROLMENT_EXPORT_COLUMNS])
+            cells = []
+            for column in columns:
+                cell = WriteOnlyCell(worksheet, value=row.get(column, ""))
+                cells.append(cell)
+            worksheet.append(cells)
         workbook.save(content)
         return content.getvalue()
 
     @classmethod
-    def _create_enrolment_xlsx(cls, queryset, field_name, user):
+    def _create_enrolment_xlsx(
+        cls, queryset, field_name, user, phase_beneficiary_summary_only=False,
+        benefit_plan_id=None,
+    ):
         """Create the fixed enrolment workbook used by the social-protection UI."""
         from django.db.models import Count, Prefetch
         from household_validation.identity import get_household_form_number
@@ -59,6 +83,27 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
         from project_social_protection.models import (
             BeneficiaryProjectEnrollment, GroupBeneficiaryProjectEnrollment,
         )
+        from social_protection.models import BenefitPlan
+
+        if phase_beneficiary_summary_only and field_name != "group_beneficiary":
+            raise ValidationError("Phase summary export is only available for household beneficiaries.")
+        if phase_beneficiary_summary_only and not benefit_plan_id:
+            raise ValidationError("Phase exports require a benefit plan.")
+
+        phase_name = ""
+        if benefit_plan_id:
+            phase = BenefitPlan.objects.filter(
+                id=benefit_plan_id,
+                is_deleted=False,
+            ).values("code", "name", "type").first()
+            if phase_beneficiary_summary_only and not phase:
+                raise ValidationError("The selected benefit plan does not exist.")
+            if phase_beneficiary_summary_only and phase["type"] != BenefitPlan.BenefitPlanType.GROUP_TYPE:
+                raise ValidationError("Phase exports require a household benefit plan.")
+            if phase:
+                phase_name = " ".join(
+                    value for value in (phase["code"], phase["name"]) if value
+                )
 
         is_group_export = field_name == "group_beneficiary"
         relation = "group" if is_group_export else "individual"
@@ -71,10 +116,10 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             "project_enrollments",
             queryset=enrollment_model.objects.filter(is_deleted=False).select_related(
                 "project__activity", "project__benefit_plan",
-            ),
+            ).order_by("date_created", "id"),
         )
         prefetches = [enrolment_prefetch]
-        if is_group_export:
+        if is_group_export and not phase_beneficiary_summary_only:
             prefetches.append(Prefetch(
                 "group__groupindividuals",
                 queryset=GroupIndividual.objects.select_related("individual").order_by(
@@ -82,23 +127,23 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                 ),
                 to_attr="export_group_members",
             ))
-        export_queryset = queryset
         enrolled_by_project = {
             row["project_id"]: row["count"]
             for row in enrollment_model.objects.filter(
                 is_deleted=False,
-                **{f"{enrollment_beneficiary_field}_id__in": export_queryset.order_by().values("pk")},
+                **{f"{enrollment_beneficiary_field}_id__in": queryset.order_by().values("pk")},
             ).values("project_id").annotate(count=Count("id"))
         }
-        queryset = queryset.select_related(
-            f"{relation}__location__parent__parent__parent"
-        ).prefetch_related(*prefetches)
+        queryset = queryset.select_related(f"{relation}__location__parent__parent__parent")
+        queryset = queryset.prefetch_related(*prefetches)
+        emitted_household_ids = set()
 
         def build_rows(records):
             record_locations = {}
             record_location_ids = {"D": set(), "W": set()}
             for record in records:
-                location = getattr(record, relation).location
+                identity = getattr(record, relation)
+                location = identity.location
                 current = location
                 while current:
                     if current.type in record_location_ids:
@@ -106,11 +151,27 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                     current = getattr(current, "parent", None)
                 record_locations[record.id] = location
 
+            primary_memberships_by_group = {}
+            if phase_beneficiary_summary_only:
+                from individual.primary_recipients import authoritative_primary_worker_memberships
+
+                group_ids = {
+                    record.group_id for record in records if not record.is_deleted
+                }
+                memberships = authoritative_primary_worker_memberships().filter(
+                    group_id__in=group_ids,
+                ).select_related("individual").order_by("group_id", "id")
+                for membership in memberships:
+                    primary_memberships_by_group.setdefault(
+                        membership.group_id, [],
+                    ).append(membership)
+
             members_by_group = {}
             archived_members_by_group = {}
-            if is_group_export:
+            if is_group_export and not phase_beneficiary_summary_only:
                 for record in records:
-                    for member in record.group.export_group_members:
+                    identity = getattr(record, relation)
+                    for member in identity.export_group_members:
                         if not member.is_deleted:
                             members_by_group.setdefault(member.group_id, []).append(member)
                         else:
@@ -121,18 +182,19 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             # links while retaining member IDs in Group.json_ext. Keep those reports
             # useful by resolving the saved IDs back to Individual records.
             legacy_member_ids_by_group = {}
-            legacy_member_ids = set()
-            for record in records:
-                if not is_group_export:
-                    continue
-                group_json = record.group.json_ext or {}
-                member_ids = list((group_json.get("members") or {}).keys())
-                legacy_member_ids_by_group[record.group_id] = member_ids
-                legacy_member_ids.update(member_ids)
-            legacy_individuals = {
-                str(individual_id): individual
-                for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
-            }
+            legacy_individuals = {}
+            if is_group_export and not phase_beneficiary_summary_only:
+                legacy_member_ids = set()
+                for record in records:
+                    identity = getattr(record, relation)
+                    group_json = identity.json_ext or {}
+                    member_ids = list((group_json.get("members") or {}).keys())
+                    legacy_member_ids_by_group[identity.id] = member_ids
+                    legacy_member_ids.update(member_ids)
+                legacy_individuals = {
+                    str(individual_id): individual
+                    for individual_id, individual in Individual.objects.in_bulk(legacy_member_ids).items()
+                }
 
             micro_catchments_by_location = {}
             for link in MicroCatchmentGVH.objects.filter(
@@ -149,18 +211,39 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                 micro_catchments_by_location.setdefault(link.location_id, []).append(link.micro_catchment.name)
 
             for record in records:
+                identity = getattr(record, relation)
+                if phase_beneficiary_summary_only:
+                    if identity.id in emitted_household_ids:
+                        logger.warning(
+                            "Skipping duplicate group beneficiary %s from Phase export",
+                            record.id,
+                        )
+                        continue
+                    emitted_household_ids.add(identity.id)
                 district, ta, gvh, village = cls._location_columns(record_locations[record.id])
                 location_ids = {}
                 current = record_locations[record.id]
                 while current:
                     location_ids[current.type] = current.id
                     current = getattr(current, "parent", None)
-                micro_catchments = (
+                micro_catchments = sorted(set(
                     micro_catchments_by_location.get(location_ids.get("W"), [])
                     + micro_catchments_by_location.get(location_ids.get("D"), [])
-                )
-                identity = getattr(record, relation)
-                if is_group_export:
+                ))
+                if phase_beneficiary_summary_only:
+                    primary_memberships = primary_memberships_by_group.get(identity.id, [])
+                    if len(primary_memberships) == 1:
+                        membership = primary_memberships[0]
+                        members = [(membership.individual, membership.role)]
+                    else:
+                        if len(primary_memberships) > 1:
+                            logger.warning(
+                                "Phase summary export found multiple authoritative primary workers "
+                                "for group %s; exporting the household row without a recipient",
+                                identity.id,
+                            )
+                        members = [(None, "")]
+                elif is_group_export:
                     members = [
                         (member.individual, member.role)
                         for member in members_by_group.get(identity.id, [])
@@ -172,22 +255,33 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                         ]
                     if not members:
                         head_id = str((identity.json_ext or {}).get("head_id") or "")
-                        members = [
+                        legacy_members = [
                             (
                                 legacy_individuals.get(member_id),
                                 "HEAD" if str(member_id) == head_id else "",
                             )
                             for member_id in legacy_member_ids_by_group.get(identity.id, [])
                         ]
+                        members = legacy_members
                 else:
                     members = [(identity, "")]
-                # Keep one row for an enrolled household without members, but otherwise
-                # export every attached member with the same household/project details.
                 members = members or [(None, "")]
-                enrolments = list(record.project_enrollments.all()) or [None]
+                enrolments = list(record.project_enrollments.all())
+                if phase_beneficiary_summary_only:
+                    # The Phase beneficiary list represents households, not
+                    # members or project assignments. A household without a
+                    # project enrolment still gets exactly one row.
+                    project_rows = (
+                        [(enrolments[0], enrolments[0].project)]
+                        if enrolments else [(None, None)]
+                    )
+                else:
+                    project_rows = (
+                        [(enrolment, enrolment.project) for enrolment in enrolments]
+                        or [(None, None)]
+                    )
 
-                for enrolment in enrolments:
-                    project = enrolment.project if enrolment else None
+                for enrolment, project in project_rows:
                     project_json = getattr(project, "json_ext", {}) or {}
                     for person, relationship in members:
                         record_json = record.json_ext or {}
@@ -199,6 +293,7 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                             "catchment_name": "; ".join(micro_catchments),
                             "group_village_head_name": gvh,
                             "village_name": village,
+                            "phase_name": phase_name,
                             "Phase_Name": project.benefit_plan.name if project else "",
                             "project_code": (
                                 project.code or project_json.get("project_code")
@@ -218,8 +313,18 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                                 )
                             ),
                             "full_name": f"{person.first_name} {person.last_name}".strip() if person else "",
-                            "national_id": person_json.get(
-                                "national_id", record_json.get("national_id", group_json.get("national_id", ""))
+                            "national_id": (
+                                _first_json_ext_value(
+                                    person_json, "national_id", "nationalId", "nid",
+                                )
+                                if phase_beneficiary_summary_only
+                                else _first_json_ext_value(
+                                    person_json, "national_id", "nationalId", "nid",
+                                ) or _first_json_ext_value(
+                                    record_json, "national_id", "nationalId", "nid",
+                                ) or _first_json_ext_value(
+                                    group_json, "national_id", "nationalId", "nid",
+                                )
                             ),
                             "date_of_birth": person.dob.isoformat() if person and person.dob else "",
                             "relationship": relationship,
@@ -237,7 +342,10 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
         export = ExportableQueryModel(
             name=filename,
             model=queryset.model.__name__,
-            content=ContentFile(cls._enrolment_workbook(rows()), filename),
+            content=ContentFile(cls._enrolment_workbook(
+                rows(),
+                ENROLMENT_EXPORT_COLUMNS,
+            ), filename),
             user=user,
             sql_query=str(queryset.query),
             file_format="xlsx",
@@ -257,9 +365,21 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
 
         def exporter(cls, self, info, **kwargs):
             custom_filters = kwargs.pop("customFilters", None)
-            export_fields = cls.validate_export_columns(field_name, kwargs.pop("fields", None))
-            fields_mapping = json.loads(kwargs.pop('fields_columns'))
+            requested_fields = kwargs.pop("fields", None)
+            phase_beneficiary_summary_only = kwargs.get(
+                "phase_beneficiary_summary_only", False,
+            )
             file_format = kwargs.pop("file_format", "csv")
+            benefit_plan_id = kwargs.get("benefit_plan__id")
+
+            if phase_beneficiary_summary_only and (
+                field_name != "group_beneficiary" or file_format != "xlsx"
+            ):
+                raise ValidationError("Phase summary export only supports household XLSX exports.")
+            if phase_beneficiary_summary_only and not benefit_plan_id:
+                raise ValidationError("Phase summary export requires a benefit plan.")
+            export_fields = cls.validate_export_columns(field_name, requested_fields)
+            fields_mapping = json.loads(kwargs.pop('fields_columns'))
 
             source_field = getattr(cls, field_name)
             filter_kwargs = {k: v for k, v in kwargs.items() if k in source_field.filtering_args}
@@ -268,7 +388,14 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
             qs = qs.filter(**filter_kwargs)
             qs = cls.__append_custom_filters(custom_filters, qs, fields_mapping)
             if file_format == "xlsx":
-                return cls._create_enrolment_xlsx(qs, field_name, info.context.user).name
+                return cls._create_enrolment_xlsx(
+                    qs,
+                    field_name,
+                    info.context.user,
+                    phase_beneficiary_summary_only=phase_beneficiary_summary_only,
+                    benefit_plan_id=benefit_plan_id if phase_beneficiary_summary_only
+                    else kwargs.get("benefit_plan__id"),
+                ).name
             export_file = ExportableQueryModel\
                 .create_csv_export(qs, export_fields, info.context.user, column_names=fields_mapping,
                                    patches=cls.get_patches_for_field(field_name))
