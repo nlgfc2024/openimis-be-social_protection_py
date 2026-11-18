@@ -4,6 +4,7 @@ import types
 from io import BytesIO
 from itertools import islice
 
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 
 from core.custom_filters import CustomFilterWizardStorage
@@ -393,7 +394,19 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
 
         def exporter(cls, self, info, **kwargs):
             custom_filters = kwargs.pop("customFilters", None)
-            export_fields = cls.validate_export_columns(field_name, kwargs.pop("fields", None))
+            requested_fields = kwargs.pop("fields", None)
+            primary_recipient_only = kwargs.get("primary_recipient_only", False)
+            if primary_recipient_only:
+                # KYC always writes the fixed KYC workbook below. Its display
+                # columns (for example catchment_name and full_name) are not
+                # arbitrary queryset fields and must not be passed through the
+                # generic model-column allow-list. The only internal query
+                # field required for this safe fixed export is the record ID.
+                if not isinstance(requested_fields, (list, tuple)) or not requested_fields:
+                    raise ValidationError("KYC export requires a non-empty list of column names.")
+                export_fields = ["id"]
+            else:
+                export_fields = cls.validate_export_columns(field_name, requested_fields)
             fields_mapping = json.loads(kwargs.pop('fields_columns'))
             file_format = kwargs.pop("file_format", "csv")
 
@@ -408,7 +421,7 @@ class ExportableSocialProtectionQueryMixin(ExportableQueryMixin):
                     qs,
                     field_name,
                     info.context.user,
-                    primary_recipient_only=kwargs.get("primary_recipient_only", False),
+                    primary_recipient_only=primary_recipient_only,
                     phase_beneficiary_summary_only=kwargs.get(
                         "phase_beneficiary_summary_only", False,
                     ),
