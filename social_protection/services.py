@@ -475,6 +475,12 @@ class BeneficiaryImportService:
             upload_id,
             benefit_plan.id,
         )
+        self._synchronize_data_for_reporting(upload_id, benefit_plan)
+
+    def _synchronize_data_for_reporting(
+        self, upload_id: uuid, benefit_plan: BenefitPlan
+    ):
+        """Trusted workflow path; callers must authorize before workflow start."""
         self._synchronize_individual(upload_id)
         self._synchronize_beneficiary(benefit_plan, upload_id)
 

@@ -315,6 +315,16 @@ def download_beneficiary_upload(request):
     try:
         benefit_plan_id = request.query_params.get('benefit_plan_id')
         filename = request.query_params.get('filename')
+        invalid_filename = not filename or filename in {'.', '..'}
+        if filename:
+            invalid_filename = invalid_filename or any((
+                '/' in filename,
+                '\\' in filename,
+                os.path.isabs(filename),
+                os.path.basename(filename) != filename,
+            ))
+        if invalid_filename:
+            raise ValueError('Invalid filename')
         benefit_plan = BenefitPlan.objects.filter(
             id=benefit_plan_id,
             is_deleted=False,

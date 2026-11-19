@@ -1,6 +1,7 @@
 import logging
 
 from core.models import User
+from django.db import transaction
 from social_protection.workflows.utils import SqlProcedurePythonWorkflow
 from social_protection.services import BeneficiaryImportService
 from social_protection.models import BenefitPlan
@@ -8,6 +9,7 @@ from social_protection.models import BenefitPlan
 logger = logging.getLogger(__name__)
 
 
+@transaction.atomic
 def process_update_valid_beneficiaries_workflow(user_uuid, benefit_plan_uuid, upload_uuid, accepted=None):
     user = User.objects.get(id=user_uuid)
     benefit_plan = BenefitPlan.objects.get(id=benefit_plan_uuid)
@@ -25,7 +27,9 @@ def process_update_valid_beneficiaries_workflow(user_uuid, benefit_plan_uuid, up
         else:
             # TO-DO - add update mode for group update upload
             pass
-    BeneficiaryImportService(user).synchronize_data_for_reporting(upload_uuid, benefit_plan)
+    BeneficiaryImportService(user)._synchronize_data_for_reporting(
+        upload_uuid, benefit_plan
+    )
 
 
 upload_sql = """

@@ -6,6 +6,11 @@ from django.db.models.query import QuerySet
 from typing import List
 
 from core.custom_filters import CustomFilterWizardInterface
+from core.utils import get_current_user
+from social_protection.benefit_plan_access import (
+    filter_queryset_by_benefit_plan,
+    require_benefit_plan_access,
+)
 from social_protection.models import BenefitPlan
 
 
@@ -44,9 +49,18 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         benefit_plan_id = kwargs.get('uuid', None)
         additional_params = kwargs.get('additional_params', None)
         if benefit_plan_id:
+            require_benefit_plan_access(
+                get_current_user(),
+                benefit_plan_id,
+            )
             benefit_plan_query = BenefitPlan.objects.filter(id=benefit_plan_id)
         else:
             benefit_plan_query = BenefitPlan.objects.filter(is_deleted=False, beneficiary_data_schema__isnull=False)
+            benefit_plan_query = filter_queryset_by_benefit_plan(
+                benefit_plan_query,
+                get_current_user(),
+                "id",
+            )
             if additional_params and 'type' in additional_params:
                 benefit_plan_query = benefit_plan_query.filter(type=additional_params['type'])
         list_of_tuple_with_definitions = self.__process_schema_and_build_tuple(benefit_plan_query, tuple_type)

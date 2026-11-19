@@ -22,7 +22,6 @@ from social_protection.models import (
     UserBenefitPlanAccess,
 )
 from social_protection.benefit_plan_access import (
-    can_access_benefit_plan,
     can_manage_benefit_plan_assignments,
     filter_benefit_plan_assignments_for_management,
     filter_queryset_by_benefit_plan,
@@ -49,13 +48,6 @@ def _saved_advanced_criteria(benefit_plan):
         return {}
     saved = json_ext.get("advanced_criteria", {}) or {}
     return saved if isinstance(saved, (dict, list)) else {}
-
-
-def _can_view_benefit_plan(user, benefit_plan_id):
-    return _have_permissions(
-        user,
-        SocialProtectionConfig.gql_benefit_plan_search_perms,
-    ) and can_access_benefit_plan(user, benefit_plan_id)
 
 
 class JsonExtMixin:
@@ -123,11 +115,8 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_queryset(cls, queryset, info):
-        if not _have_permissions(
-            info.context.user,
-            SocialProtectionConfig.gql_benefit_plan_search_perms,
-        ):
-            return queryset.none()
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
         return filter_queryset_by_benefit_plan(
             queryset,
             info.context.user,
@@ -136,6 +125,8 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlan.objects.filter(pk=id).first()
         user = info.context.user
         if not _have_permissions(
             user,
@@ -147,29 +138,21 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
         ).first()
 
     def resolve_beneficiary_data_schema(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         perms = SocialProtectionConfig.gql_schema_search_perms
         if _have_permissions(info.context.user, perms):
             return self.beneficiary_data_schema
         return None
 
     def resolve_has_payment_plans(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()
 
     def resolve_advanced_criteria(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         perms = SocialProtectionConfig.gql_benefit_plan_criteria_search_perms
         if _have_permissions(info.context.user, perms):
             return _saved_advanced_criteria(self)
         return None
 
     def resolve_updates_require_approval(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         if _have_permissions(info.context.user, SocialProtectionConfig.gql_benefit_plan_criteria_search_perms):
             return bool(SocialProtectionConfig.gql_check_benefit_plan_update)
         return None
@@ -354,6 +337,8 @@ class BeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
         if not _have_permissions(
             info.context.user,
             SocialProtectionConfig.gql_beneficiary_search_perms,
@@ -363,6 +348,8 @@ class BeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return Beneficiary.objects.filter(pk=id).first()
         user = info.context.user
         if not _have_permissions(
             user,
@@ -370,14 +357,6 @@ class BeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
         ):
             return None
         return Beneficiary.get_queryset(None, user).filter(pk=id).first()
-
-    def resolve_benefit_plan(self, info):
-        if not _can_view_benefit_plan(
-            info.context.user,
-            self.benefit_plan_id,
-        ):
-            return None
-        return self.benefit_plan
 
     def resolve_is_eligible(self, info):
         return self.is_eligible
@@ -453,6 +432,8 @@ class GroupBeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
         if not _have_permissions(
             info.context.user,
             SocialProtectionConfig.gql_beneficiary_search_perms,
@@ -462,6 +443,8 @@ class GroupBeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return GroupBeneficiary.objects.filter(pk=id).first()
         user = info.context.user
         if not _have_permissions(
             user,
@@ -469,14 +452,6 @@ class GroupBeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
         ):
             return None
         return GroupBeneficiary.get_queryset(None, user).filter(pk=id).first()
-
-    def resolve_benefit_plan(self, info):
-        if not _can_view_benefit_plan(
-            info.context.user,
-            self.benefit_plan_id,
-        ):
-            return None
-        return self.benefit_plan
 
     def resolve_is_eligible(self, info):
         return self.is_eligible
@@ -506,6 +481,8 @@ class BenefitPlanDataUploadQGLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
         if not _have_permissions(
             info.context.user,
             SocialProtectionConfig.gql_beneficiary_search_perms,
@@ -518,6 +495,8 @@ class BenefitPlanDataUploadQGLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlanDataUploadRecords.objects.filter(pk=id).first()
         user = info.context.user
         if not _have_permissions(
             user,
@@ -528,14 +507,6 @@ class BenefitPlanDataUploadQGLType(DjangoObjectType, JsonExtMixin):
             BenefitPlanDataUploadRecords.objects.all(),
             info,
         ).filter(pk=id).first()
-
-    def resolve_benefit_plan(self, info):
-        if not _can_view_benefit_plan(
-            info.context.user,
-            self.benefit_plan_id,
-        ):
-            return None
-        return self.benefit_plan
 
 
 class BenefitPlanSchemaFieldsGQLType(ObjectType):
@@ -586,11 +557,8 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_queryset(cls, queryset, info):
-        if not _have_permissions(
-            info.context.user,
-            SocialProtectionConfig.gql_benefit_plan_search_perms,
-        ):
-            return queryset.none()
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
         return filter_queryset_by_benefit_plan(
             queryset,
             info.context.user,
@@ -599,6 +567,8 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
 
     @classmethod
     def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlan.history.filter(pk=id).first()
         user = info.context.user
         if not _have_permissions(
             user,
@@ -610,14 +580,10 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
         ).first()
 
     def resolve_beneficiary_data_schema(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         perms = SocialProtectionConfig.gql_schema_search_perms
         if _have_permissions(info.context.user, perms):
             return self.beneficiary_data_schema
         return None
 
     def resolve_has_payment_plans(self, info):
-        if not _can_view_benefit_plan(info.context.user, self.id):
-            return None
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()

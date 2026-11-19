@@ -1,5 +1,7 @@
 import logging
 
+from django.db import transaction
+
 from core.models import User
 from social_protection.workflows.utils import DataUploadWorkflow
 from social_protection.services import BeneficiaryImportService
@@ -8,6 +10,7 @@ from social_protection.models import BenefitPlan
 logger = logging.getLogger(__name__)
 
 
+@transaction.atomic
 def process_import_beneficiaries_workflow(user_uuid, benefit_plan_uuid, upload_uuid):
     # Call the records' validation service directly with the provided arguments
     user = User.objects.get(id=user_uuid)
@@ -18,7 +21,9 @@ def process_import_beneficiaries_workflow(user_uuid, benefit_plan_uuid, upload_u
         service.execute(upload_sql)
     else:
         service.execute(upload_sql_group_version)
-    BeneficiaryImportService(user).synchronize_data_for_reporting(upload_uuid, benefit_plan)
+    BeneficiaryImportService(user)._synchronize_data_for_reporting(
+        upload_uuid, benefit_plan
+    )
 
 
 upload_sql = """

@@ -1,12 +1,17 @@
 """Shared Benefit Plan assignment-based access-control helpers."""
 
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
+
+from individual.models import IndividualDataSourceUpload
 
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlanDataUploadRecords,
     UserBenefitPlanAccess,
 )
+
+
+_BENEFIT_PLAN_SCOPE_MARKER = "_benefit_plan_access_scope_applied"
 
 
 def _is_superuser(user):
@@ -115,6 +120,10 @@ def require_benefit_plan_upload_access(
     When enabled, every plan associated with the upload must be accessible and
     an explicitly supplied plan must own the upload.
     """
+    if not upload_id:
+        raise ValidationError("Upload ID is required.")
+    if not IndividualDataSourceUpload.objects.filter(pk=upload_id).exists():
+        raise ValidationError("Upload does not exist.")
     if not SocialProtectionConfig.enable_benefit_plan_access_control:
         return
 
@@ -124,9 +133,12 @@ def require_benefit_plan_upload_access(
             is_deleted=False,
         ).values_list("benefit_plan_id", flat=True).distinct()
     )
-    if not plan_ids or (
-        benefit_plan_id is not None and benefit_plan_id not in plan_ids
-    ):
+    if has_all_benefit_plans_access(user):
+        return
+    requested_plan_mismatch = benefit_plan_id is not None and str(
+        benefit_plan_id
+    ) not in {str(plan_id) for plan_id in plan_ids}
+    if not plan_ids or requested_plan_mismatch:
         raise PermissionDenied("Benefit Plan upload access is required.")
     for plan_id in plan_ids:
         require_benefit_plan_access(user, plan_id)
@@ -137,8 +149,15 @@ def filter_queryset_by_benefit_plan(queryset, user, field_name="benefit_plan_id"
     accessible_ids = get_accessible_benefit_plan_ids(user)
     if accessible_ids is None:
         return queryset
+    if getattr(queryset.query, _BENEFIT_PLAN_SCOPE_MARKER, False):
+        return queryset
     lookup = f"{field_name}__in"
-    return queryset.filter(**{lookup: accessible_ids})
+    scoped_queryset = queryset.filter(**{lookup: accessible_ids})
+    # Django Query.clone() preserves custom query attributes, so subsequent
+    # filters and Graphene's connection pass retain this marker without using
+    # request-global state that could accidentally affect unrelated querysets.
+    setattr(scoped_queryset.query, _BENEFIT_PLAN_SCOPE_MARKER, True)
+    return scoped_queryset
 
 
 def can_manage_benefit_plan_assignments(user, benefit_plan_id):
