@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import graphene
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
@@ -11,6 +12,22 @@ from social_protection.schema import Query
 
 
 class BeneficiaryExportColumnTest(SimpleTestCase):
+    def test_group_export_does_not_expose_duplicate_kyc_argument(self):
+        schema = graphene.Schema(query=Query)
+        result = schema.execute(
+            '{ __type(name: "Query") { fields { name args { name } } } }',
+        )
+        self.assertIsNone(result.errors, result.errors)
+        export_field = next(
+            field for field in result.data["__type"]["fields"]
+            if field["name"] == "groupBeneficiaryExport"
+        )
+
+        self.assertNotIn(
+            "primaryRecipientOnly",
+            [argument["name"] for argument in export_field["args"]],
+        )
+
     def export_query(self, field_name):
         resolver = Mock()
         query = type('ExportQuery', (ExportableSocialProtectionQueryMixin,), {
@@ -61,5 +78,11 @@ class BeneficiaryExportColumnTest(SimpleTestCase):
                 xlsx.return_value.name = 'enrolments.xlsx'
                 result = export(None, info, fields=['id'], fields_columns=json.dumps({}), file_format='xlsx')
                 self.assertEqual(result, 'enrolments.xlsx')
-                xlsx.assert_called_once_with(resolver.return_value.filter.return_value, field_name, info.context.user)
+                xlsx.assert_called_once_with(
+                    resolver.return_value.filter.return_value,
+                    field_name,
+                    info.context.user,
+                    phase_beneficiary_summary_only=False,
+                    benefit_plan_id=None,
+                )
                 csv.assert_not_called()

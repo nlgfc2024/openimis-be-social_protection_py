@@ -5,7 +5,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.db.models import (
     Q, Case, When, BooleanField, Value, OuterRef, Subquery
 )
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from individual.models import GroupIndividual
 
 from django.utils.translation import gettext as _
@@ -27,12 +27,19 @@ from social_protection.gql_mutations import (
     CreateGroupBeneficiaryMutation,
     UpdateGroupBeneficiaryMutation,
     DeleteGroupBeneficiaryMutation,
+    AssignBenefitPlanUserMutation,
+    RevokeBenefitPlanUserAccessMutation,
 )
 from social_protection.gql_queries import (
     BenefitPlanGQLType,
     BeneficiaryGQLType, GroupBeneficiaryGQLType,
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
     BenefitPlanHistoryGQLType, annotate_group_beneficiary_primary_recipient,
+    UserBenefitPlanAccessGQLType,
+)
+from social_protection.benefit_plan_access import (
+    require_benefit_plan_assignment_management,
+    require_benefit_plan_assignment_management_permission,
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
@@ -40,6 +47,7 @@ from social_protection.models import (
     Beneficiary,
     GroupBeneficiary,
     BenefitPlanDataUploadRecords,
+    UserBenefitPlanAccess,
 )
 from social_protection.validation import (
     validate_bf_unique_code,
@@ -127,6 +135,9 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         group_primary_recipient_dob_gte=graphene.Date(
             name="group_PrimaryRecipient_Dob_Gte",
         ),
+        # Used by the Phase beneficiary-list export. It is deliberately not a
+        # queryset filter: it only controls the number of rows in the workbook.
+        phase_beneficiary_summary_only=graphene.Boolean(),
     )
 
     beneficiary_data_upload_history = OrderedDjangoFilterConnectionField(
@@ -171,6 +182,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         search=graphene.String(),
         sort_alphabetically=graphene.Boolean(),
     )
+    benefit_plan_user_access = OrderedDjangoFilterConnectionField(
+        UserBenefitPlanAccessGQLType,
+        benefit_plan_id=graphene.UUID(required=True),
+        orderBy=graphene.List(of_type=graphene.String),
+    )
 
 
     def resolve_bf_code_validity(self, info, **kwargs):
@@ -184,6 +200,30 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             )
         else:
             return ValidationMessageGQLType(True)
+
+    def resolve_benefit_plan_user_access(self, info, benefit_plan_id, **kwargs):
+        require_benefit_plan_assignment_management_permission(
+            info.context.user,
+        )
+        if not BenefitPlan.objects.filter(
+            id=benefit_plan_id,
+            is_deleted=False,
+        ).exists():
+            raise ValidationError("mutation.benefit_plan_not_found")
+        require_benefit_plan_assignment_management(
+            info.context.user,
+            benefit_plan_id,
+        )
+        return UserBenefitPlanAccess.objects.filter(
+            benefit_plan_id=benefit_plan_id,
+            is_deleted=False,
+        ).select_related(
+            "user",
+            "user__i_user",
+            "user__officer",
+            "user__claim_admin",
+            "user__t_user",
+        ).order_by("user__username")
 
     def resolve_bf_name_validity(self, info, **kwargs):
         perms = SocialProtectionConfig.gql_benefit_plan_search_perms
@@ -657,6 +697,8 @@ class Mutation(graphene.ObjectType):
     delete_benefit_plan = DeleteBenefitPlanMutation.Field()
     undo_delete_benefit_plan = UndoDeleteBenefitPlanMutation.Field()
     close_benefit_plan = CloseBenefitPlanMutation.Field()
+    assign_benefit_plan_user = AssignBenefitPlanUserMutation.Field()
+    revoke_benefit_plan_user_access = RevokeBenefitPlanUserAccessMutation.Field()
 
     create_beneficiary = CreateBeneficiaryMutation.Field()
     update_beneficiary = UpdateBeneficiaryMutation.Field()
