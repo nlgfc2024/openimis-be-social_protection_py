@@ -174,3 +174,21 @@ class UserBenefitPlanAccessTest(TestCase):
             "id",
         )
         self.assertEqual(list(scoped), [self.upg])
+
+    def test_cloned_scope_marker_is_safe_for_supported_same_user_reuse(self):
+        self.assign(self.upg)
+        scoped = filter_queryset_by_benefit_plan(
+            BenefitPlan.objects.filter(is_deleted=False),
+            self.user,
+            "id",
+        )
+
+        # Chaining clones the Query and retains the marker. Supported callers
+        # keep the same user and field, so the existing UPG restriction remains.
+        cloned = scoped.filter(name__icontains="UPG").filter(
+            name__icontains="UPG",
+        )
+        reapplied = filter_queryset_by_benefit_plan(cloned, self.user, "id")
+
+        self.assertIs(reapplied, cloned)
+        self.assertEqual(list(reapplied), [self.upg])

@@ -460,6 +460,26 @@ class Track03BenefitPlanAccessTest(TestCase):
         self.user.t_user.save()
         require_benefit_plan_upload_access(self.user, orphan.id)
 
+    def test_upload_validation_is_a_noop_when_feature_is_disabled(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+
+        require_benefit_plan_upload_access(self.user, None)
+        require_benefit_plan_upload_access(self.user, uuid4())
+
+    def test_download_invalid_items_keeps_legacy_empty_csv_for_unknown_upload(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+        request = APIRequestFactory().get(
+            "/invalid",
+            {"upload_id": uuid4()},
+        )
+
+        with self.permission_patch():
+            force_authenticate(request, user=self.user)
+            response = views.download_invalid_items(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"\n")
+
     def test_custom_filter_schema_is_assignment_scoped(self):
         tuple_type = namedtuple("BenefitPlanField", ["field", "filter", "type"])
         wizard = BenefitPlanCustomFilterWizard()

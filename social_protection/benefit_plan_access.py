@@ -120,12 +120,12 @@ def require_benefit_plan_upload_access(
     When enabled, every plan associated with the upload must be accessible and
     an explicitly supplied plan must own the upload.
     """
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        return
     if not upload_id:
         raise ValidationError("Upload ID is required.")
     if not IndividualDataSourceUpload.objects.filter(pk=upload_id).exists():
         raise ValidationError("Upload does not exist.")
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
-        return
 
     plan_ids = list(
         BenefitPlanDataUploadRecords.objects.filter(
@@ -153,9 +153,12 @@ def filter_queryset_by_benefit_plan(queryset, user, field_name="benefit_plan_id"
         return queryset
     lookup = f"{field_name}__in"
     scoped_queryset = queryset.filter(**{lookup: accessible_ids})
-    # Django Query.clone() preserves custom query attributes, so subsequent
-    # filters and Graphene's connection pass retain this marker without using
-    # request-global state that could accidentally affect unrelated querysets.
+    # This marker means that this Query has already been scoped. Django's
+    # Query.clone() preserves custom attributes, so subsequent filters and
+    # Graphene's connection pass retain it. A marked queryset must therefore
+    # never be reused for a different user or Benefit Plan field without
+    # re-evaluating authorisation: the early return above would otherwise skip
+    # filtering required for that new user or field.
     setattr(scoped_queryset.query, _BENEFIT_PLAN_SCOPE_MARKER, True)
     return scoped_queryset
 
