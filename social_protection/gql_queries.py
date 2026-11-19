@@ -2,7 +2,8 @@ import json
 
 import graphene
 from django.contrib.auth.models import AnonymousUser
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
 import django_filters
@@ -47,6 +48,34 @@ def _saved_advanced_criteria(benefit_plan):
         return {}
     saved = json_ext.get("advanced_criteria", {}) or {}
     return saved if isinstance(saved, (dict, list)) else {}
+
+
+def annotate_group_beneficiary_primary_recipient(queryset):
+    from individual.primary_recipients import authoritative_primary_worker_memberships
+
+    primary_memberships = authoritative_primary_worker_memberships().filter(
+        group_id=OuterRef("group_id"),
+    ).order_by("id")
+    head_memberships = GroupIndividual.objects.filter(
+        group_id=OuterRef("group_id"),
+        role=GroupIndividual.Role.HEAD,
+        is_deleted=False,
+    ).order_by("id")
+
+    return queryset.annotate(
+        primary_recipient_first_name=Coalesce(
+            Subquery(primary_memberships.values("individual__first_name")[:1]),
+            Subquery(head_memberships.values("individual__first_name")[:1]),
+        ),
+        primary_recipient_last_name=Coalesce(
+            Subquery(primary_memberships.values("individual__last_name")[:1]),
+            Subquery(head_memberships.values("individual__last_name")[:1]),
+        ),
+        primary_recipient_dob=Coalesce(
+            Subquery(primary_memberships.values("individual__dob")[:1]),
+            Subquery(head_memberships.values("individual__dob")[:1]),
+        ),
+    )
 
 
 class JsonExtMixin:
@@ -350,6 +379,12 @@ class GroupBeneficiaryFilter(
             role=GroupIndividual.Role.HEAD,
             is_deleted=False
         ).values_list('group_id', flat=True)
+        from individual.primary_recipients import authoritative_primary_worker_memberships
+
+        primary_matches = authoritative_primary_worker_memberships().filter(
+            Q(individual__first_name__icontains=value)
+            | Q(individual__last_name__icontains=value),
+        ).values_list("group_id", flat=True)
 
         village_matches = Location.objects.filter(
             type='V',
@@ -365,6 +400,7 @@ class GroupBeneficiaryFilter(
             Q(group__code__icontains=value)
             | Q(json_ext__icontains=value)
             | Q(group__id__in=head_matches)
+            | Q(group__id__in=primary_matches)
             | Q(group__location__id__in=village_matches)
         )
 
