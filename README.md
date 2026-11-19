@@ -361,6 +361,15 @@ If the property `uniqueness` is set for a particular field, in `validations`, an
 This list is necessary in the Benefit Update workflow to flag such records in the IndividualDataSource.
 
 ### Validations in upload workflow
+
+The Python Beneficiaries Update workflow merges uploaded business fields into
+existing individual JSON in both full and accepted-row updates. Unrelated JSON
+is retained. `validation_status` is controlled by the registry validation workflow:
+ordinary beneficiary uploads cannot add, replace or clear it, even when a benefit
+plan schema includes that field. Uploaded native identity/location fields continue
+through their existing native-column update path rather than being copied into
+individual JSON. Accepted-row updates leave unaccepted individuals untouched.
+
 * https://github.com/openimis/openimis-lightning_dkr/tree/develop Here there are two workflows responsible for uploading and validation data: `BenefitPlanUpdate` and `beneficiary-import-valid-items`
 * The workflow `BenefitPlanUpdate` is utilized when a file is uploaded using a form in BenefitPlanPage.
 * The workflow named `beneficiary-import-valid-items` is activated to confirm valid items following the validation process. Its activation occurs when a task linked to that specific action is initiated.
