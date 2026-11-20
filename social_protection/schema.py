@@ -38,6 +38,7 @@ from social_protection.gql_queries import (
     UserBenefitPlanAccessGQLType,
 )
 from social_protection.benefit_plan_access import (
+    filter_queryset_by_benefit_plan,
     require_benefit_plan_assignment_management,
     require_benefit_plan_assignment_management_permission,
 )
@@ -293,7 +294,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             SocialProtectionConfig.gql_benefit_plan_search_perms
         )
 
-        query = BenefitPlan.objects.filter(*filters)
+        query = filter_queryset_by_benefit_plan(
+            BenefitPlan.objects.filter(*filters),
+            info.context.user,
+            "id",
+        )
 
         sort_alphabetically = kwargs.get("sort_alphabetically", None)
         if sort_alphabetically:
@@ -337,7 +342,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             if not status or not benefit_plan_id:
                 return default_results
 
-            bp = BenefitPlan.objects.filter(id=benefit_plan_id).first()
+            bp = filter_queryset_by_benefit_plan(
+                BenefitPlan.objects.filter(id=benefit_plan_id),
+                info.context.user,
+                "id",
+            ).first()
             if not bp:
                 return default_results
 
@@ -454,7 +463,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             if not status or not benefit_plan_id:
                 return default_results
 
-            bp = BenefitPlan.objects.filter(id=benefit_plan_id).first()
+            bp = filter_queryset_by_benefit_plan(
+                BenefitPlan.objects.filter(id=benefit_plan_id),
+                info.context.user,
+                "id",
+            ).first()
             if not bp:
                 return default_results
 
@@ -583,7 +596,10 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             info.context.user,
             SocialProtectionConfig.gql_beneficiary_search_perms
         )
-        query = GroupBeneficiary.objects.filter(*filters)
+        query = GroupBeneficiary.get_queryset(
+            GroupBeneficiary.objects.filter(*filters),
+            info.context.user,
+        )
         return gql_optimizer.query(query, info)
 
     def resolve_beneficiary_data_upload_history(self, info, **kwargs):
@@ -600,7 +616,10 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             info.context.user,
             SocialProtectionConfig.gql_beneficiary_search_perms
         )
-        query = BenefitPlanDataUploadRecords.objects.filter(*filters)
+        query = filter_queryset_by_benefit_plan(
+            BenefitPlanDataUploadRecords.objects.filter(*filters),
+            info.context.user,
+        )
         return gql_optimizer.query(query, info)
 
     def resolve_benefit_plan_schema_field(self, info, **kwargs):
@@ -615,7 +634,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         if bf_type:
             filters.append(Q(type=bf_type))
 
-        query = BenefitPlan.objects.filter(*filters)
+        query = filter_queryset_by_benefit_plan(
+            BenefitPlan.objects.filter(*filters),
+            info.context.user,
+            "id",
+        )
         return gql_optimizer.query(query, info)
 
     @staticmethod
@@ -664,7 +687,11 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             SocialProtectionConfig.gql_benefit_plan_search_perms
         )
 
-        query = BenefitPlan.history.filter(*filters)
+        query = filter_queryset_by_benefit_plan(
+            BenefitPlan.history.filter(*filters),
+            info.context.user,
+            "id",
+        )
 
         sort_alphabetically = kwargs.get("sort_alphabetically", None)
         if sort_alphabetically:

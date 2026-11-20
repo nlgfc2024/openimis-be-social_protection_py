@@ -25,6 +25,7 @@ from social_protection.models import (
 from social_protection.benefit_plan_access import (
     can_manage_benefit_plan_assignments,
     filter_benefit_plan_assignments_for_management,
+    filter_queryset_by_benefit_plan,
     require_benefit_plan_assignment_management_permission,
 )
 
@@ -140,6 +141,30 @@ class BenefitPlanGQLType(DjangoObjectType, JsonExtMixin):
                             "contains", "icontains"],
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
+        return filter_queryset_by_benefit_plan(
+            queryset,
+            info.context.user,
+            "id",
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlan.objects.filter(pk=id).first()
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_benefit_plan_search_perms,
+        ):
+            return None
+        return cls.get_queryset(BenefitPlan.objects.all(), info).filter(
+            pk=id,
+        ).first()
 
     def resolve_beneficiary_data_schema(self, info):
         perms = SocialProtectionConfig.gql_schema_search_perms
@@ -339,6 +364,29 @@ class BeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
         # the reverse relation here (query it via that module instead).
         exclude = ("project_enrollments",)
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
+        if not _have_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return queryset.none()
+        return Beneficiary.get_queryset(queryset, info.context.user)
+
+    @classmethod
+    def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return Beneficiary.objects.filter(pk=id).first()
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return None
+        return Beneficiary.get_queryset(None, user).filter(pk=id).first()
+
     def resolve_is_eligible(self, info):
         return self.is_eligible
 
@@ -418,6 +466,29 @@ class GroupBeneficiaryGQLType(DjangoObjectType, JsonExtMixin):
         # the reverse relation here (query it via that module instead).
         exclude = ("project_enrollments",)
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
+        if not _have_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return queryset.none()
+        return GroupBeneficiary.get_queryset(queryset, info.context.user)
+
+    @classmethod
+    def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return GroupBeneficiary.objects.filter(pk=id).first()
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return None
+        return GroupBeneficiary.get_queryset(None, user).filter(pk=id).first()
+
     def resolve_is_eligible(self, info):
         return self.is_eligible
 
@@ -443,6 +514,35 @@ class BenefitPlanDataUploadQGLType(DjangoObjectType, JsonExtMixin):
                                BenefitPlanGQLType._meta.filter_fields),
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
+        if not _have_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return queryset.none()
+        return filter_queryset_by_benefit_plan(
+            queryset,
+            info.context.user,
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlanDataUploadRecords.objects.filter(pk=id).first()
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_beneficiary_search_perms,
+        ):
+            return None
+        return cls.get_queryset(
+            BenefitPlanDataUploadRecords.objects.all(),
+            info,
+        ).filter(pk=id).first()
 
 
 class BenefitPlanSchemaFieldsGQLType(ObjectType):
@@ -490,6 +590,30 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
                             "contains", "icontains"],
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return queryset
+        return filter_queryset_by_benefit_plan(
+            queryset,
+            info.context.user,
+            "id",
+        )
+
+    @classmethod
+    def get_node(cls, info, id):
+        if not SocialProtectionConfig.enable_benefit_plan_access_control:
+            return BenefitPlan.history.filter(pk=id).first()
+        user = info.context.user
+        if not _have_permissions(
+            user,
+            SocialProtectionConfig.gql_benefit_plan_search_perms,
+        ):
+            return None
+        return cls.get_queryset(BenefitPlan.history.all(), info).filter(
+            pk=id,
+        ).first()
 
     def resolve_beneficiary_data_schema(self, info):
         perms = SocialProtectionConfig.gql_schema_search_perms

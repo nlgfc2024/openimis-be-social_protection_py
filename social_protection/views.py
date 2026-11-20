@@ -4,6 +4,7 @@ import pandas as pd
 import mimetypes
 import os
 
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 from django.http import StreamingHttpResponse
 from django.utils.translation import gettext as _
@@ -16,6 +17,10 @@ from core.views import check_user_rights
 from individual.apps import IndividualConfig
 from individual.models import IndividualDataSource
 from social_protection.apps import SocialProtectionConfig
+from social_protection.benefit_plan_access import (
+    require_benefit_plan_access,
+    require_benefit_plan_upload_access,
+)
 from social_protection.models import BenefitPlan
 from social_protection.services import BeneficiaryImportService
 from workflow.services import WorkflowService
@@ -74,6 +79,12 @@ def download_template_benefit_plan_file(request):
         id=benefit_plan_uuid, is_deleted=False
     ).first()
     try:
+        if benefit_plan is None:
+            return Response(
+                {'success': False, 'error': 'Benefit Plan not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        require_benefit_plan_access(request.user, benefit_plan.id)
         base_fields = SocialProtectionConfig.beneficiary_base_fields
         extra_fields = get_global_schema_fields(benefit_plan)
         all_fields = base_fields + extra_fields
@@ -90,6 +101,11 @@ def download_template_benefit_plan_file(request):
             'attachment; filename="beneficiary_upload_template.csv"'
         )
         return response
+    except PermissionDenied as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except Exception as exc:
         logger.error(
             "Unexpected error while generating template file", exc_info=exc
@@ -113,6 +129,7 @@ def import_beneficiaries(request):
          benefit_plan, group_aggregation_column) = (
             _resolve_import_beneficiaries_args(request)
         )
+        require_benefit_plan_access(user, benefit_plan.id)
 
         is_valid, error_message = is_valid_file(import_file)
         if not is_valid:
@@ -131,6 +148,11 @@ def import_beneficiaries(request):
             ))
 
         return Response(result)
+    except PermissionDenied as e:
+        return Response(
+            {'success': False, 'error': str(e)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as e:
         if import_file and benefit_plan:
             _remove_file(benefit_plan, import_file)
@@ -177,6 +199,11 @@ def validate_import_beneficiaries(request):
 
         # for now just return info if df valid
         return Response(result)
+    except PermissionDenied as e:
+        return Response(
+            {'success': False, 'error': str(e)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as e:
         logger.error("Error while validating individuals", exc_info=e)
         return Response(
@@ -206,6 +233,11 @@ def create_task_with_importing_valid_items(request):
             benefit_plan
         )
         return Response({'success': True, 'error': None}, status=201)
+    except PermissionDenied as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as exc:
         logger.error(
             "Error while sending callback to openIMIS", exc_info=exc
@@ -230,6 +262,7 @@ def create_task_with_importing_valid_items(request):
 def download_invalid_items(request):
     try:
         upload_id = request.query_params.get('upload_id')
+        require_benefit_plan_upload_access(request.user, upload_id)
 
         invalid_items = IndividualDataSource.objects.filter(
             Q(is_deleted=False)
@@ -260,6 +293,11 @@ def download_invalid_items(request):
         )
         return response
 
+    except PermissionDenied as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as exc:
         # Handle errors gracefully
         logger.error("Error while fetching data", exc_info=exc)
@@ -277,6 +315,26 @@ def download_beneficiary_upload(request):
     try:
         benefit_plan_id = request.query_params.get('benefit_plan_id')
         filename = request.query_params.get('filename')
+        invalid_filename = not filename or filename in {'.', '..'}
+        if filename:
+            invalid_filename = invalid_filename or any((
+                '/' in filename,
+                '\\' in filename,
+                os.path.isabs(filename),
+                os.path.basename(filename) != filename,
+            ))
+        if invalid_filename:
+            raise ValueError('Invalid filename')
+        benefit_plan = BenefitPlan.objects.filter(
+            id=benefit_plan_id,
+            is_deleted=False,
+        ).first()
+        if benefit_plan is None:
+            return Response(
+                {'success': False, 'error': 'Benefit Plan not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        require_benefit_plan_access(request.user, benefit_plan.id)
         target_file_path = (
             SocialProtectionConfig.get_beneficiary_upload_file_path(
                 benefit_plan_id, filename
@@ -285,6 +343,11 @@ def download_beneficiary_upload(request):
         file_handler = DefaultStorageFileHandler(target_file_path)
         return file_handler.get_file_response_csv(filename)
 
+    except PermissionDenied as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as exc:
         logger.error("Error while fetching data", exc_info=exc)
         return Response(
@@ -319,6 +382,11 @@ def synchronize_data_for_reporting(request):
             benefit_plan
         )
         return Response({'success': True, 'error': None}, status=201)
+    except PermissionDenied as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except ValueError as exc:
         logger.error(
             "Error while sending callback to openIMIS", exc_info=exc
@@ -351,7 +419,10 @@ def _resolve_import_beneficiaries_args(request):
         raise ValueError('Workflow name not provided')
     if not workflow_group:
         raise ValueError('Workflow group not provided')
-    benefit_plan = BenefitPlan.objects.filter(id=benefit_plan_uuid).first()
+    benefit_plan = BenefitPlan.objects.filter(
+        id=benefit_plan_uuid,
+        is_deleted=False,
+    ).first()
     if not benefit_plan:
         raise ValueError(
             'Benefit Plan not found: {}'.format(benefit_plan_uuid)
