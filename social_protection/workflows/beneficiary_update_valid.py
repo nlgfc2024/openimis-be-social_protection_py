@@ -102,7 +102,9 @@ BEGIN
             -- Update social_protection_beneficiary
           with updated_beneficiaries as (
           update  social_protection_beneficiary
-      set "Json_ext" = social_protection_beneficiary."Json_ext" || filter_jsonb(ids."Json_ext", json_schema -> 'properties') - 'first_name' - 'last_name' - 'dob', "DateUpdated" = NOW()
+      set "Json_ext" = coalesce(social_protection_beneficiary."Json_ext", '{}'::jsonb) ||
+          (filter_jsonb(ids."Json_ext", json_schema -> 'properties')
+           - 'first_name' - 'last_name' - 'dob' - 'validation_status'), "DateUpdated" = NOW()
             FROM individual_individualdatasource ids
         WHERE upload_id=current_upload_id
           and social_protection_beneficiary."UUID" = (ids."Json_ext" ->> 'ID')::UUID
@@ -117,7 +119,12 @@ BEGIN
                 dob = COALESCE(to_date(f."Json_ext"->>'dob', 'YYYY-MM-DD'), dob),
                 location_id = loc."LocationId",
                 "DateUpdated" = NOW(),
-                "Json_ext" = f."Json_ext"
+                "Json_ext" = (
+                    CASE WHEN jsonb_typeof(individual_individual."Json_ext") = 'object'
+                         THEN individual_individual."Json_ext" ELSE '{}'::jsonb END
+                ) || (f."Json_ext" - ARRAY[
+                    'ID', 'first_name', 'last_name', 'dob', 'location_name', 'location_code', 'validation_status'
+                ])
             FROM updated_beneficiaries f
             LEFT JOIN "tblLocations" AS loc
                     ON loc."LocationName" = f."Json_ext"->>'location_name'
@@ -241,7 +248,9 @@ BEGIN
             -- Update social_protection_beneficiary
           WITH updated_beneficiaries AS (
           UPDATE  social_protection_beneficiary
-          SET "Json_ext" = social_protection_beneficiary."Json_ext" || filter_jsonb(ids."Json_ext", json_schema -> 'properties') - 'first_name' - 'last_name' - 'dob', "DateUpdated" = NOW()
+          SET "Json_ext" = coalesce(social_protection_beneficiary."Json_ext", '{}'::jsonb) ||
+          (filter_jsonb(ids."Json_ext", json_schema -> 'properties')
+           - 'first_name' - 'last_name' - 'dob' - 'validation_status'), "DateUpdated" = NOW()
             FROM individual_individualdatasource ids
             WHERE upload_id = current_upload_id
               AND social_protection_beneficiary."UUID" = (ids."Json_ext" ->> 'ID')::UUID
@@ -257,7 +266,12 @@ BEGIN
                 dob = COALESCE(to_date(f."Json_ext"->>'dob', 'YYYY-MM-DD'), dob),
                 location_id = loc."LocationId",
                 "DateUpdated" = NOW(),
-                "Json_ext" = f."Json_ext"
+                "Json_ext" = (
+                    CASE WHEN jsonb_typeof(individual_individual."Json_ext") = 'object'
+                         THEN individual_individual."Json_ext" ELSE '{}'::jsonb END
+                ) || (f."Json_ext" - ARRAY[
+                    'ID', 'first_name', 'last_name', 'dob', 'location_name', 'location_code', 'validation_status'
+                ])
             FROM updated_beneficiaries f
             LEFT JOIN "tblLocations" AS loc
                     ON loc."LocationName" = f."Json_ext"->>'location_name'
