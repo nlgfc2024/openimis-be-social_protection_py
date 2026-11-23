@@ -63,6 +63,9 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
     def __init__(self, user, validation_class=BenefitPlanValidation):
         super().__init__(user, validation_class)
 
+    def _task_benefit_plan_id(self, entity, obj_data):
+        return entity.id if entity is not None else obj_data.get('id')
+
     @register_service_signal('benefit_plan_service.create')
     def create(self, obj_data):
         data_with_defaults = apply_benefit_plan_creation_defaults(
@@ -138,6 +141,7 @@ class BenefitPlanService(BaseService, UpdateCheckerLogicServiceMixin):
         TaskService(self.user).create({
             'source': 'BenefitPlanService',
             'entity': benefit_plan,
+            'benefit_plan_id': str(benefit_plan.id),
             'status': Task.Status.RECEIVED,
             'executor_action_event': (
                 TasksManagementConfig.default_executor_event
@@ -152,6 +156,12 @@ class BeneficiaryService(BaseService, CheckerLogicServiceMixin):
 
     def __init__(self, user, validation_class=BeneficiaryValidation):
         super().__init__(user, validation_class)
+
+    def _task_benefit_plan_id(self, entity, obj_data):
+        return obj_data.get(
+            'benefit_plan_id',
+            getattr(entity, 'benefit_plan_id', None),
+        )
 
     def would_exceed_max_active_beneficiaries(
         self, benefit_plan_id, status, id=None
@@ -244,6 +254,12 @@ class GroupBeneficiaryService(BaseService, CheckerLogicServiceMixin):
 
     def __init__(self, user, validation_class=GroupBeneficiaryValidation):
         super().__init__(user, validation_class)
+
+    def _task_benefit_plan_id(self, entity, obj_data):
+        return obj_data.get(
+            'benefit_plan_id',
+            getattr(entity, 'benefit_plan_id', None),
+        )
 
     def would_exceed_max_active_beneficiaries(
         self, benefit_plan_id, status, id=None
@@ -893,6 +909,7 @@ class BeneficiaryTaskCreatorService:
         TaskService(self.user).create({
             'source': 'import_valid_items',
             'entity': upload_record,
+            'benefit_plan_id': str(benefit_plan.id),
             'status': Task.Status.RECEIVED,
             'executor_action_event': (
                 TasksManagementConfig.default_executor_event
