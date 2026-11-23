@@ -51,7 +51,7 @@ class BeneficiaryUpdateValidationPreservationTests(TestCase):
             rows.append(row)
         accepted = [rows[0].pk] if partial else None
         reporting = nullcontext() if real_reporting else patch(
-            "social_protection.services.BeneficiaryImportService.synchronize_data_for_reporting",
+            "social_protection.services.BeneficiaryImportService._synchronize_data_for_reporting",
         )
         with reporting:
             process_update_valid_beneficiaries_workflow(self.actor.pk, self.plan.pk, upload.pk, accepted)
