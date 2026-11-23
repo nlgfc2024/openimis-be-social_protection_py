@@ -2,16 +2,21 @@
 
 from django.core.exceptions import PermissionDenied, ValidationError
 
-from individual.models import IndividualDataSourceUpload
-
 from social_protection.apps import SocialProtectionConfig
-from social_protection.models import (
-    BenefitPlanDataUploadRecords,
-    UserBenefitPlanAccess,
-)
 
 
 _BENEFIT_PLAN_SCOPE_MARKER = "_benefit_plan_access_scope_applied"
+
+
+def benefit_plan_access_control_enabled():
+    """Return the shared feature state without loading authorization models."""
+    return bool(SocialProtectionConfig.enable_benefit_plan_access_control)
+
+
+def _user_benefit_plan_access_model():
+    from social_protection.models import UserBenefitPlanAccess
+
+    return UserBenefitPlanAccess
 
 
 def _is_superuser(user):
@@ -56,10 +61,11 @@ def get_accessible_benefit_plan_ids(user):
     An empty queryset means no access. ``None`` is deliberately reserved for the
     feature-disabled, all-plan-permission, and superuser cases.
     """
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+    if not benefit_plan_access_control_enabled():
         return None
     if has_all_benefit_plans_access(user):
         return None
+    UserBenefitPlanAccess = _user_benefit_plan_access_model()
     if not user or getattr(user, "is_anonymous", False):
         return UserBenefitPlanAccess.objects.none().values_list(
             "benefit_plan_id", flat=True
@@ -77,12 +83,13 @@ def can_access_benefit_plan(user, benefit_plan_id, include_deleted=False):
     Assignments are deliberately retained when a Benefit Plan is soft-deleted,
     but cannot grant scope until an authorised restore reactivates that plan.
     """
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+    if not benefit_plan_access_control_enabled():
         return True
     if has_all_benefit_plans_access(user):
         return True
     if not user or getattr(user, "is_anonymous", False):
         return False
+    UserBenefitPlanAccess = _user_benefit_plan_access_model()
     filters = {
         "user": user,
         "benefit_plan_id": benefit_plan_id,
@@ -120,8 +127,11 @@ def require_benefit_plan_upload_access(
     When enabled, every plan associated with the upload must be accessible and
     an explicitly supplied plan must own the upload.
     """
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+    if not benefit_plan_access_control_enabled():
         return
+    from individual.models import IndividualDataSourceUpload
+    from social_protection.models import BenefitPlanDataUploadRecords
+
     if not upload_id:
         raise ValidationError("Upload ID is required.")
     if not IndividualDataSourceUpload.objects.filter(pk=upload_id).exists():
@@ -176,7 +186,7 @@ def can_manage_benefit_plan_assignments(user, benefit_plan_id):
         return True
     if not has_benefit_plan_assignment_management_permission(user):
         return False
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+    if not benefit_plan_access_control_enabled():
         return has_all_benefit_plans_access(user)
     return can_access_benefit_plan(user, benefit_plan_id)
 
@@ -187,7 +197,7 @@ def filter_benefit_plan_assignments_for_management(queryset, user):
         return queryset.none()
     if _is_superuser(user):
         return queryset
-    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+    if not benefit_plan_access_control_enabled():
         if has_all_benefit_plans_access(user):
             return queryset
         return queryset.none()

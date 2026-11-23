@@ -107,6 +107,7 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
         TaskService(self.user).create({
             'source': 'import_group_valid_items',
             'entity': self.upload_record,
+            'benefit_plan_id': str(self.benefit_plan.id),
             'status': Task.Status.RECEIVED,
             'executor_action_event': TasksManagementConfig.default_executor_event,
             'business_event': SocialProtectionConfig.validation_import_group_valid_items,

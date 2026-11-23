@@ -102,6 +102,8 @@ class GroupBeneficiaryImportGQLTest(openIMISGraphQLTestCase, TaskDataMixin):
 
         pending_task = Task.objects.all().order_by('date_created').last()
         self.assertEqual(pending_task.json_ext['source_name'], filename, "Task for approving upload of group not found")
+        self.assertEqual(pending_task.benefit_plan_id, self.benefit_plan.id)
+        self.assertFalse(pending_task.benefit_plan_is_shared)
 
         mut_id_task_update = uuid.uuid4()
         raw_input = F"""clientMutationId: "{mut_id_task_update}"\n id: \"{pending_task.uuid}\"\n  status: ACCEPTED\n  taskGroupId: \"{self.task_group.uuid}\"\n       """

@@ -8,6 +8,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from core.test_helpers import create_test_technical_user
 from social_protection.apps import DEFAULT_CONFIG, SocialProtectionConfig
 from social_protection.benefit_plan_access import (
+    benefit_plan_access_control_enabled,
     can_access_benefit_plan,
     can_manage_benefit_plan_assignments,
     filter_queryset_by_benefit_plan,
@@ -59,6 +60,14 @@ class BenefitPlanAccessPolicyTest(SimpleTestCase):
         self.assertTrue(can_access_benefit_plan(user, "plan"))
         self.assertIsNone(get_accessible_benefit_plan_ids(user))
         self.assertIs(filter_queryset_by_benefit_plan(queryset, user), queryset)
+
+    def test_shared_feature_state_does_not_load_authorization_models(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = True
+        with patch(
+            "social_protection.benefit_plan_access._user_benefit_plan_access_model",
+            side_effect=AssertionError("authorization models must stay lazy"),
+        ):
+            self.assertTrue(benefit_plan_access_control_enabled())
 
     def test_all_plan_permission_bypasses_assignments_only(self):
         SocialProtectionConfig.enable_benefit_plan_access_control = True
